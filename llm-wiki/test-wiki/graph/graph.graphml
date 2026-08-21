@@ -1,0 +1,43 @@
+<?xml version='1.0' encoding='utf-8'?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+  <key id="d_title" for="node" attr.name="title" attr.type="string" />
+  <key id="d_node_type" for="node" attr.name="node_type" attr.type="string" />
+  <key id="d_page_type" for="node" attr.name="page_type" attr.type="string" />
+  <key id="d_path" for="node" attr.name="path" attr.type="string" />
+  <key id="d_predicate" for="edge" attr.name="predicate" attr.type="string" />
+  <key id="d_confidence" for="edge" attr.name="confidence" attr.type="string" />
+  <key id="d_status" for="edge" attr.name="status" attr.type="string" />
+  <key id="d_source" for="edge" attr.name="source" attr.type="string" />
+  <graph id="wiki" edgedefault="directed">
+    <node id="company:deepmind">
+      <data key="d_title">DeepMind</data>
+      <data key="d_node_type">company</data>
+      <data key="d_page_type">entity</data>
+      <data key="d_path">entities/deepmind.md</data>
+    </node>
+    <node id="concept:attention-mechanism">
+      <data key="d_title">Attention Mechanism</data>
+      <data key="d_node_type">concept</data>
+      <data key="d_page_type">concept</data>
+      <data key="d_path">concepts/attention-mechanism.md</data>
+    </node>
+    <edge id="a583835ea9fb82d55f301334" source="company:deepmind" target="concept:attention-mechanism">
+      <data key="d_predicate">chose</data>
+      <data key="d_confidence">high</data>
+      <data key="d_status">current</data>
+      <data key="d_source">deepmind-annual-report</data>
+    </edge>
+    <edge id="b41b3886f22727ee9f2e783a" source="company:deepmind" target="concept:attention-mechanism">
+      <data key="d_predicate">mentions</data>
+      <data key="d_confidence">low</data>
+      <data key="d_status">current</data>
+      <data key="d_source" />
+    </edge>
+    <edge id="dff72762534a3fa99d4b9253" source="concept:attention-mechanism" target="company:deepmind">
+      <data key="d_predicate">mentions</data>
+      <data key="d_confidence">low</data>
+      <data key="d_status">current</data>
+      <data key="d_source" />
+    </edge>
+  </graph>
+</graphml>

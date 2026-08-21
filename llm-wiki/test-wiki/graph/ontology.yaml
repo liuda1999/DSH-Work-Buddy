@@ -1,0 +1,50 @@
+# Test ontology for the minimal wiki (copy of the bundled template).
+
+node_types:
+  person:
+    maps_from:
+      type: entity
+      kind: person
+  company:
+    maps_from:
+      type: entity
+      kind: company
+  product:
+    maps_from:
+      type: entity
+      kind: product
+  paper:
+    maps_from:
+      type: entity
+      kind: paper
+  concept:
+    maps_from:
+      type: concept
+  source:
+    maps_from:
+      type: source
+  synthesis:
+    maps_from:
+      type: synthesis
+
+predicates:
+  mentions:
+    subject_types: ["*"]
+    object_types: ["*"]
+    requires_evidence: false
+  sourced_from:
+    subject_types: ["*"]
+    object_types: [source]
+    requires_evidence: false
+  summarizes_raw:
+    subject_types: [source]
+    object_types: ["*"]
+    requires_evidence: false
+  chose:
+    subject_types: [person, company, organization]
+    object_types: [product, concept]
+    requires_evidence: true
+  works_on:
+    subject_types: [person]
+    object_types: [product, concept]
+    requires_evidence: true
