@@ -1,0 +1,22 @@
+{
+  "name": "llm-wiki",
+  "version": "3.0.0",
+  "description": "Build and maintain an LLM-curated personal knowledge base with default local FastEmbed + sqlite-vec search, BM25 fusion, structured evidence, incremental caching, and a compiled graph layer.",
+  "author": {
+    "name": "Praney Behl"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/praneybehl/llm-wiki-plugin",
+  "repository": "https://github.com/praneybehl/llm-wiki-plugin",
+  "keywords": [
+    "knowledge-base",
+    "wiki",
+    "notes",
+    "research",
+    "second-brain",
+    "obsidian",
+    "markdown",
+    "rag-alternative",
+    "llm-wiki"
+  ]
+}

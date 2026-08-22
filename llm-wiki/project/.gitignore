@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+.wiki-search-cache.json
+.wiki-cache/
+.claude/settings.local.json
+launch-posts.md
+.leankg/
+.remember/
+
+# Node / VitePress docs toolchain
+node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+
+# Local launch assets (never commit)
+release-assets/
+docs/public/assets/second-brain-*.png
+docs/public/assets/llm-wiki-second-brain-*.png

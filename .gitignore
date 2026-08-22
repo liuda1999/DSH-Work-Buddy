@@ -1,0 +1,63 @@
+# ===== 依赖与构建产物 =====
+node_modules/
+dist/
+build/
+lib/
+*.tsbuildinfo
+release-assets/
+
+# ===== 运行时数据 =====
+WorkBuddy-Web/dshwb-data/
+WorkBuddy-Web/data/
+.wiki-cache/
+__pycache__/
+.pytest_cache/
+*.log
+*.tmp
+*.pid
+
+# ===== 数据恢复副本与临时脚本 =====
+_audit*.py
+_test*.py
+_test*.mjs
+_cleanup*.py
+_create_release_package.py
+_min_*.js
+_hdr_*.js
+_ws_raw.py
+_diag*.py
+
+# ===== 测试/诊断/脱敏检查脚本与标记（均不入库） =====
+_*.mjs
+_p3_marker.json
+
+# ===== 发布包 =====
+*.zip
+*.tar.gz
+
+# ===== IDE / 系统 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 敏感信息 =====
+.env
+.env.*
+!.env.example
+*.credentials.yaml
+*.credentials
+
+# ===== TRAE 会话（含本地路径与密钥信息，不入库） =====
+.trae/
+
+# ===== 其他运行时 =====
+coverage/
+.cache/
+.artifacts/
+.playwright-mcp/
+dist-exe/
+output/
+src/
+assets/
