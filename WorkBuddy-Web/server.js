@@ -405,6 +405,101 @@ const db = {
   pluginCommunity: [] // 用户自建收藏（内存；预置精选见 PLUGIN_COMMUNITY_SEED）
 };
 
+// ---------- 智能体模板持久化（data/agents/templates.json） ----------
+// 模板定义（id/name/description/preset/prompt）此前仅存内存 db，网关重启即全部丢失；
+// 现落盘 + 启动恢复；记忆文件（data/agents/<id>/MEMORY.md）本就落盘，一并支持孤儿恢复。
+// 另含代码级预置（AGENT_TEMPLATES_SEED）：templates.json 尚未生成（全新安装/发布包首次启动）时注入，
+// 用户删除/编辑后落盘即固化，重启不重复注入；记忆文件按模板 id 懒建。
+const AGENT_TEMPLATES_SEED = [
+  {
+    id: 'tpl-preset-doc-writer',
+    name: '技术文档工程师',
+    description: '编写与整理 README、接口文档、架构说明等规范化技术文档，输出结构化 Markdown。',
+    preset: 'code',
+    prompt: '你是技术文档工程师。职责：编写与维护高质量技术文档（README、API 接口文档、架构设计说明、部署手册、变更日志）。要求：1) 输出规范 Markdown，层级清晰（标题/列表/表格/代码块）；2) 接口文档含请求参数、返回结构、错误码与示例；3) 面向读者写作，先结论后细节，避免口语化；4) 引用文件路径与命令须准确可复制；5) 涉及不确定的实现细节，先向用户确认再落笔。',
+    createdAt: null,
+    presetSeed: true
+  },
+  {
+    id: 'tpl-preset-data-analyst',
+    name: '数据分析助手',
+    description: '数据清洗、统计汇总与报表解读：从原始数据提炼指标、对比与结论建议。',
+    preset: 'standard',
+    prompt: '你是数据分析助手。职责：数据整理、统计汇总、指标计算与报表解读。要求：1) 先明确分析目标与口径（时间范围/维度/去重规则），不清晰时先提问；2) 展示关键步骤与中间结果，数字保留两位小数并标注单位；3) 结论分层：事实（数据说什么）→ 判断（意味着什么）→ 建议（下一步做什么）；4) 对可疑数据（缺失/异常值/口径不一致）显式标注而非静默处理；5) 输出建议用表格呈现明细。',
+    createdAt: null,
+    presetSeed: true
+  },
+  {
+    id: 'tpl-preset-translator',
+    name: '翻译润色助手',
+    description: '中英互译与文本润色：忠实原意、语句自然，技术术语保留英文并附注释。',
+    preset: 'minimal',
+    prompt: '你是翻译与润色助手。职责：中英互译、文本润色、术语统一。要求：1) 忠实原文语义与语气，不增删信息；2) 译文符合目标语言习惯，避免翻译腔；3) 技术术语（如 API、token、pipeline）首次出现保留英文并括注中文；4) 润色时保持原文结构，仅优化表达；5) 长文分段处理，每段给出译文；6) 发现原文歧义或疑似笔误，在译文后以「注：」标出。',
+    createdAt: null,
+    presetSeed: true
+  },
+  {
+    id: 'tpl-preset-copywriter',
+    name: '创意文案策划',
+    description: '营销文案、社交媒体内容与活动策划：多风格产出，附传播要点与适用场景。',
+    preset: 'cordis',
+    prompt: '你是创意文案策划。职责：营销文案、社交媒体内容、活动策划与品牌命名。要求：1) 先确认目标受众、投放渠道与调性（专业/活泼/高级感）；2) 每次提供 3 个不同方向的方案，各附一句创意逻辑说明；3) 文案符合渠道特点（标题字数、话题标签、行动号召）；4) 避免夸大与违规用词（绝对化用语、虚假承诺）；5) 活动策划含目标、主题、流程、传播路径与效果衡量指标。',
+    createdAt: null,
+    presetSeed: true
+  }
+];
+const AGENT_TEMPLATES_FILE = path.join(AGENTS_DATA_DIR, 'templates.json');
+function saveAgentTemplates() {
+  try {
+    fs.mkdirSync(AGENTS_DATA_DIR, { recursive: true });
+    fs.writeFileSync(AGENT_TEMPLATES_FILE, JSON.stringify(db.agentTemplates, null, 2), 'utf8');
+  } catch (e) { /* 写盘失败不阻塞模板操作 */ }
+}
+function loadAgentTemplates() {
+  let loaded = null;
+  try {
+    loaded = JSON.parse(fs.readFileSync(AGENT_TEMPLATES_FILE, 'utf8'));
+  } catch (e) { /* 文件不存在或损坏 */ }
+  if (Array.isArray(loaded)) {
+    db.agentTemplates = loaded.filter((t) => t && t.id);
+    return;
+  }
+  // 全新安装（发布包首次启动，无 templates.json）：注入代码级预置智能体（不落盘，
+  // 保持 data/ 为空以满足打包脱敏；用户首次增删改时固化到盘）
+  db.agentTemplates = AGENT_TEMPLATES_SEED.map((t) => ({ ...t }));
+}
+// 孤儿记忆恢复：data/agents 下存在 MEMORY.md 但模板清单中已无定义的 tpl_* 目录（此前重启丢失的模板），
+// 以占位模板找回（可重命名/编辑），避免用户创建的智能体「凭空消失」。
+function recoverOrphanAgentTemplates() {
+  const existing = new Set(db.agentTemplates.map((t) => t.id));
+  const recovered = [];
+  let list = [];
+  try { list = fs.readdirSync(AGENTS_DATA_DIR, { withFileTypes: true }); } catch (e) { return; }
+  for (const ent of list) {
+    if (!ent.isDirectory() || !/^tpl_/.test(ent.name) || existing.has(ent.name)) continue;
+    const mem = path.join(AGENTS_DATA_DIR, ent.name, 'MEMORY.md');
+    if (!fs.existsSync(mem)) continue;
+    let createdAt = null;
+    try { createdAt = fs.statSync(path.join(AGENTS_DATA_DIR, ent.name)).mtime.toISOString(); } catch (e) { /* 取时间失败置空 */ }
+    recovered.push({
+      id: ent.name,
+      name: ent.name,
+      description: '（原模板定义已随网关重启丢失，已从记忆文件恢复；可在此重命名与编辑）',
+      preset: 'standard',
+      prompt: '',
+      createdAt,
+      recoveredFromMemory: true
+    });
+  }
+  if (recovered.length) {
+    db.agentTemplates.push(...recovered);
+    saveAgentTemplates();
+    console.log(`[DSH Work Buddy] 已从记忆文件恢复 ${recovered.length} 个智能体模板（定义丢失，占位恢复）`);
+  }
+}
+loadAgentTemplates();
+recoverOrphanAgentTemplates();
+
 // 插件社区：预置精选站点（活跃、评价高，前端不可删除）+ 用户自建收藏
 const PLUGIN_COMMUNITY_SEED = [
   { id: 'pc-topic-dsh-plugin', name: 'GitHub · dsh-plugin 专题', url: 'https://github.com/topics/dsh-plugin', tag: '社区', scale: '官方专题', color: '#4A90D9', desc: 'dsh 智能体插件官方聚合专题：插件、技能与扩展持续收录。' },
@@ -2063,18 +2158,20 @@ function findArchiveSessionDir(groupName, taskId) {
       createdAt: new Date().toISOString()
     };
     db.agentTemplates.push(tpl);
+    saveAgentTemplates(); // 模板定义落盘，网关重启不丢失
     return sendJson(res, 200, tpl);
   }
   if (urlPath.match(/^\/api\/resources\/agent-templates\/[^/]+$/) && req.method === 'PUT') {
     const id = urlPath.split('/').pop();
     const body = await readBody(req);
     const tpl = db.agentTemplates.find((t) => t.id === id);
-    if (tpl) Object.assign(tpl, body);
+    if (tpl) { Object.assign(tpl, body); saveAgentTemplates(); }
     return sendJson(res, 200, tpl || {});
   }
   if (urlPath.match(/^\/api\/resources\/agent-templates\/[^/]+$/) && req.method === 'DELETE') {
     const id = urlPath.split('/').pop();
     db.agentTemplates = db.agentTemplates.filter((t) => t.id !== id);
+    saveAgentTemplates(); // 同步落盘，重启后删除状态保持
     return sendJson(res, 200, { success: true });
   }
   // 智能体模板内置记忆（智能体管理页记忆编辑）：读取（懒建）/编辑/重置 data/agents/<id>/MEMORY.md
