@@ -46,18 +46,19 @@ e:\worke
 
 | 页面 | data-page | 功能 |
 |---|---|---|
-| **任务管理** | `tasks` | 任务看板（今日/进行中/已完成/逾期分组）、KPI 与环比、左侧工作区侧栏（含各工作区任务数徽标）、点击任务打开**会话弹窗**（自研对话组件：输入栏 + 模型/模式/权限 chips + 斜杠命令 + 只读拦截条 + 设定新期限） |
+| **任务管理** | `tasks` | 任务看板（今日/进行中/已完成/逾期分组）、KPI 与环比、左侧工作区侧栏（含各工作区任务数徽标）、点击任务打开**会话弹窗**（自研对话组件：输入栏 + 文件/图片上传 + 模型/模式/权限 chips + 斜杠命令 + 只读拦截条 + 设定新期限） |
 | **项目总览** | `overview` | 全工作区任务统计、分区概览、搜索；「查看文件」玻璃抽屉 |
 | **文件归档** | `archive` | 归档组管理 + 归档会话卡片（文件大小 MB / Token 万/亿，两位小数）；点卡片打开详情弹窗（左：按扩展名分类的文件列表，可预览/下载；右：对话记录） |
 | **日程管理** | `schedule` | 日程/待办视图 |
 | **团队协作** | `team` | 占位（敬请期待） |
-| **资源仓库** | `resources` | Tab：插件（dsh 实时清单，只读）、技能、智能体身份、Wiki 知识库（文档增删/编辑/检索 + **知识图谱**：文档+章节节点、跨文档引用） |
+| **资源仓库** | `resources` | Tab：插件（dsh 实时清单，只读）、技能、智能体身份、Wiki 知识库（**分类 > 仓库 > 文档三级结构**：新建仓库/新建文档归仓/编辑移动仓库 + 增删检索 + **知识图谱**：文档+章节节点、跨文档引用） |
 | **插件社区** | `plugin-community` | 网址导航瀑布流：**9 个预置精选社区**（含 dsh-plugin 专题、Hugging Face、魔搭等，不可删）+ 用户自建收藏（可删） |
 | **设置中心** | `settings` | 大模型 API 配置：DeepSeek 官方卡、默认模型卡、插件与运行时卡（shell/agent-loop/web-search 分级档位）、**内置供应商目录**（40+ 家 catalog，配置密钥即启用）、**自定义 Provider**（本地 vLLM/llama.cpp/ollama OpenAI 兼容端点 + 「获取模型」按钮 + 编辑）、高级命名空间动态表单 |
 
 ### 会话弹窗（核心交互）
 - 会话与任务一对一绑定，绑定持久化在 `task.sessionSnapshot`（重进复用同一会话，历史保留）。
 - 对话组件直连 dsh：`session.models`（模型选择器，含「⟳ 刷新」）、`agentPreset.list`（工作模式）、`session.history` 投影（权限级别 / 上下文卡 / 统计卡）。
+- **附件上传**：📎 文件按钮（文本类文件，文本块注入发送，所有模型可用）+ 🖼️ 图片按钮（**仅支持图片输入的模型显示**，经网关 `/api/model-modality` 判定：settings 声明 > pi-ai 内置目录 > provider defaultInput）；选择后附件即保存到任务专属目录 `uploads/`（会话隔离、重名加序号、防穿越），chip 显示已保存标记。
 - 逾期/已完成任务只读（输入封禁 + 拦截条）；逾期任务可「设定新期限」恢复会话（renew 重算状态 + 重开非只读对话组件）。
 
 ---
@@ -67,9 +68,11 @@ e:\worke
 单文件一体化网关，按职责划分：
 
 1. **本地业务 API**（不转发 dsh）：`/api/workspaces`、`/api/tasks`、`/api/archive`、`/api/wiki`、`/api/resources`、`/api/schedule`、`/api/search`、`/api/plugin-community`。
-   - 任务：内存 db + **磁盘持久化**（`data/tasks/<id>/task.json`，重启恢复）；任务专属目录 = 会话隔离边界。
+   - 任务：内存 db + **磁盘持久化**（`data/tasks/<id>/task.json`，重启恢复）；任务专属目录 = 会话隔离边界；对话附件落盘 `<任务目录>/uploads/`（`POST /api/tasks/<id>/upload`，文件名消毒防穿越、重名加序号、16MB 上限）。
    - 归档：复制产物到 `data/archive/<组>/<任务>_<id后6位>/` + `manifest.json`（元数据 + 对话记录 + 文件清单）。
-   - Wiki 图谱：扫描文档构建 document/section 节点 + contains/part_of/mentions 边，按「文档集合指纹」自动失效重建。
+   - Wiki 知识库：**仓库清单持久化**（`data/wiki/repos.json`，内置「本地文档库」恒在；`GET/POST /api/wiki/repos` 建仓）；文档**归仓落盘**（lite 模式 `data/wiki/<仓库>/<标题>.md`，llm-wiki 模式 `sources/`；`POST /api/wiki/write` 新建、`PUT /api/wiki/doc` 编辑可移动仓库并清理旧文件）；listWikiDocs 按目录推断 category/repoSlug。
+   - Wiki 图谱：扫描文档构建 document/section 节点 + contains/part_of/mentions 边，按「文档集合指纹」自动失效重建，图数据按 (category, repo) 隔离。
+   - 模型模态判定：`GET /api/model-modality?provider=&model=` → `{image}`（对话窗口图片按钮显隐依据）。
    - 插件社区：`{presets: 预置 9 项, user: 自建收藏}`。
 2. **RPC 转发**（`/api/<method>` → harness 3080，envelope `{type:'client-request', rpcId, method, payload}`）：`session.*`、`workspace.*`、`llm.*`、`credentials.*`、`settings.*`、`agentPreset.*`、`skill.*`、`commands.*` 等全量透传。
    - **必须改写 Origin 头为 `http://127.0.0.1:3080`**（dsh 连接围栏要求 Origin 与 Host 匹配，否则 403）。
@@ -127,6 +130,9 @@ start.bat        # 依赖/构建（首次较慢，幂等）→ 端口检查 → 
 | `_test_diag_shutdown.mjs` | 优雅关闭验证（组件同关、无残留进程） |
 | `_test_verify_v2.mjs` / `_test_verify_chat.mjs` / `_test_verify_perm.mjs` / `_test_verify_p2/p3b/p4.mjs` | 功能回归套件 |
 | `_test_probe_*.mjs` | 功能实证探针（图谱/设置中心/归档/插件社区/卡片格式等） |
+| `_test_probe_upload.mjs` | 对话上传探针（模态显隐 6 项 + 文件附件 14 项 + 后端模态 6 项 + 落盘隔离 11 项） |
+| `_test_probe_wiki_repo.mjs` / `_test_probe_wiki_pane.mjs` / `_test_probe_wiki_empty_repo.mjs` | WIKI 建仓/归仓/编辑移动/空仓库卡片探针 |
+| `_test_probe_modality_custom.mjs` | 自定义 Provider 模态声明（真实写入→查询→清理） |
 | `_sanitize_check.mjs` | 打包前脱敏检查（必跑） |
 
 回归基线：startup_qc 17/17、e2e_chat 18/18、smoke、verify_v2 25/25 等全部通过。

@@ -8485,9 +8485,13 @@ async function loadRsTemplates() {
 
 async function loadRsDocs() {
   try {
-    const data = await fetchJson('/api/wiki/docs');
-    RS.docs = Array.isArray(data.docs) ? data.docs : [];
-    RS.repos = Array.isArray(data.repos) ? data.repos : [];
+    // 仓库元数据独立于 docs 接口（/api/wiki/repos）；并行拉取，避免空仓库在面板/文档下拉中丢失
+    const [d, r] = await Promise.all([
+      fetchJson('/api/wiki/docs'),
+      fetchJson('/api/wiki/repos').catch(() => null),
+    ]);
+    RS.docs = Array.isArray(d.docs) ? d.docs : [];
+    RS.repos = (r && Array.isArray(r.repos)) ? r.repos : [];
   } catch (e) {
     RS.docs = [];
     RS.repos = [];
@@ -9748,8 +9752,12 @@ function renderRsWikiPane() {
     counts.set(k, (counts.get(k) || 0) + 1);
     counts.set('all', counts.get('all') + 1);
   });
-  // 分类板块（全部视图）：按板块分组渲染；单分类视图直接平铺
-  const boardKeys = (RS.wikiCat && RS.wikiCat !== 'all') ? [RS.wikiCat] : RS_WIKI_CATS.slice(1).map(c => c.key).filter(k => counts.get(k) > 0);
+  // 分类板块（全部视图）：按板块分组渲染；单分类视图直接平铺。
+  // 板块须包含「有文档」或「已建仓库（即使暂无文档）」的分类，保证空仓库卡片可见
+  const reposByCat = new Map(RS_WIKI_CATS.map(c => [c.key, (RS.repos || []).filter(r => r.category === c.key)]));
+  const boardKeys = (RS.wikiCat && RS.wikiCat !== 'all')
+    ? [RS.wikiCat]
+    : RS_WIKI_CATS.slice(1).map(c => c.key).filter(k => counts.get(k) > 0 || (reposByCat.get(k) || []).length > 0);
   const docRow = d => {
     const complex = rsDocComplex(d);
     const cat = rsCatOf(d.category);

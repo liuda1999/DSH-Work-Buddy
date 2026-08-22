@@ -788,6 +788,8 @@ function serializeWikiDoc(meta, body) {
 }
 
 // 扫描轻量文档库：递归（限深 2）*.md，跳过 . 开头目录/文件；withBody 时附带正文（检索用）
+// 归属推断：根目录文档 = category 'note' / repoSlug 'default'（既有文档兼容）；
+// 子目录文档 = 首段作为仓库 slug（查仓库清单得 category，查不到按 note）；llm-wiki 模式的 sources/ 前缀归默认仓库。
 function listWikiDocs(withBody = false) {
   const docs = [];
   const walk = (dir, rel, depth) => {
@@ -805,8 +807,19 @@ function listWikiDocs(withBody = false) {
         const meta = parseWikiDoc(text);
         let mtime = null;
         try { mtime = fs.statSync(full).mtime.toISOString(); } catch (e) { /* 取时间失败置空 */ }
+        const seg = relPath.split('/');
+        let category = 'note';
+        let repoSlug = 'default';
+        if (seg.length > 1) {
+          const first = seg[0];
+          if (first !== 'sources' || getWikiMode() !== 'llm-wiki') {
+            repoSlug = first;
+            const metaRepo = readWikiRepos().find((r) => r.slug === first);
+            category = metaRepo ? metaRepo.category : 'note';
+          }
+        }
         docs.push(Object.assign(
-          { relPath, title: meta.title || ent.name.replace(/\.md$/i, ''), description: meta.description, tags: meta.tags, category: 'note', mtime },
+          { relPath, title: meta.title || ent.name.replace(/\.md$/i, ''), description: meta.description, tags: meta.tags, category, repoSlug, mtime },
           withBody ? { body: meta.body } : null
         ));
       }
@@ -814,6 +827,28 @@ function listWikiDocs(withBody = false) {
   };
   walk(WIKI_STORE_DIR, '', 1);
   return docs;
+}
+
+// ---------- Wiki 仓库清单（data/wiki/repos.json 持久化；内置「本地文档库」恒在） ----------
+const WIKI_REPOS_FILE = path.join(WIKI_STORE_DIR, 'repos.json');
+const WIKI_BUILTIN_REPO = { category: 'note', slug: 'default', name: '本地文档库' };
+const WIKI_CATEGORIES = ['material', 'note', 'agent-doc', 'experience', 'archive'];
+function readWikiRepos() {
+  try {
+    const j = JSON.parse(fs.readFileSync(WIKI_REPOS_FILE, 'utf8'));
+    return Array.isArray(j) ? j : [];
+  } catch (e) { return []; }
+}
+function writeWikiRepos(repos) {
+  try {
+    fs.mkdirSync(WIKI_STORE_DIR, { recursive: true });
+    fs.writeFileSync(WIKI_REPOS_FILE, JSON.stringify(repos, null, 2), 'utf8');
+  } catch (e) { /* 写入失败不阻塞（仓库为展示元数据） */ }
+}
+function wikiRepoList() {
+  // 内置仓库 + 用户仓库（内置恒在前；重名/重 slug 以用户列表为准去重）
+  const user = readWikiRepos().filter((r) => r && r.slug && r.slug !== 'default');
+  return [WIKI_BUILTIN_REPO, ...user].map((r) => ({ ...r, mode: getWikiMode() }));
 }
 
 // 解析文档库相对路径 → 绝对路径（防目录穿越：resolve 后必须仍在 WIKI_STORE_DIR 内）
@@ -1830,6 +1865,73 @@ function findArchiveSessionDir(groupName, taskId) {
       return sendJson(res, 500, { error: { message: '保存文档失败：' + e.message } });
     }
   }
+  // 文档创建（前端契约：/api/wiki/write，携带 category + repo，落盘归仓）
+  if (urlPath === '/api/wiki/write' && req.method === 'POST') {
+    const body = await readBody(req);
+    const title = String(body.title || '').trim();
+    const description = String(body.description || '').trim();
+    const tags = (Array.isArray(body.tags) ? body.tags : []).map((t) => String(t).trim()).filter(Boolean);
+    if (!title) return sendJson(res, 400, { error: { message: 'title（名称）不能为空' } });
+    if (!description) return sendJson(res, 400, { error: { message: 'description（简介）不能为空' } });
+    if (tags.length < 3) return sendJson(res, 400, { error: { message: 'tags（标签）至少 3 个' } });
+    const category = String(body.category || 'note');
+    let repoSlug = String(body.repo || 'default').trim();
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(repoSlug) || repoSlug === 'default') repoSlug = 'default';
+    const safe = title.replace(/[\\/:*?"<>|\r\n\t]/g, '').trim().slice(0, 80) || 'untitled';
+    try {
+      const content = serializeWikiDoc({ title, description, tags }, body.content || '');
+      if (getWikiMode() === 'llm-wiki') {
+        // llm-wiki 模式：写入 sources/ 并确保 SCHEMA.md / index.md 骨架（存在则不覆盖）
+        const srcDir = path.join(WIKI_LLM_DIR, 'sources');
+        fs.mkdirSync(srcDir, { recursive: true });
+        fs.writeFileSync(path.join(srcDir, safe + '.md'), content, 'utf8');
+        const schemaFile = path.join(WIKI_LLM_DIR, 'SCHEMA.md');
+        if (!fs.existsSync(schemaFile)) fs.writeFileSync(schemaFile, LLM_WIKI_SCHEMA_MD, 'utf8');
+        const indexFile = path.join(WIKI_LLM_DIR, 'index.md');
+        if (!fs.existsSync(indexFile)) fs.writeFileSync(indexFile, LLM_WIKI_INDEX_MD, 'utf8');
+        return sendJson(res, 200, { relPath: 'sources/' + safe + '.md', title });
+      }
+      // lite 模式：归属仓库 → data/wiki/<repoSlug>/<title>.md（default 存根目录，兼容既有文档）
+      const dir = repoSlug === 'default' ? WIKI_STORE_DIR : path.join(WIKI_STORE_DIR, repoSlug);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, safe + '.md'), content, 'utf8');
+      const relPath = repoSlug === 'default' ? safe + '.md' : repoSlug + '/' + safe + '.md';
+      return sendJson(res, 200, { relPath, title });
+    } catch (e) {
+      return sendJson(res, 500, { error: { message: '保存文档失败：' + e.message } });
+    }
+  }
+  if (urlPath === '/api/wiki/doc' && req.method === 'PUT') {
+    // 文档编辑（前端契约）：支持改标题/简介/正文/分类/仓库；仓库变化时自动移动文件
+    const body = await readBody(req);
+    const oldRel = String(body.path || '').trim();
+    const title = String(body.title || '').trim();
+    const description = String(body.description || '').trim();
+    if (!oldRel) return sendJson(res, 400, { error: { message: '缺少文档路径' } });
+    if (!title) return sendJson(res, 400, { error: { message: 'title（名称）不能为空' } });
+    if (!description) return sendJson(res, 400, { error: { message: 'description（简介）不能为空' } });
+    const oldFull = resolveWikiFile(oldRel);
+    if (!oldFull) return sendJson(res, 403, { error: { message: '非法文档路径' } });
+    // tags 编辑表单不提供：沿用原文档 frontmatter
+    let tags = [];
+    try { const oldDoc = parseWikiDoc(fs.readFileSync(oldFull, 'utf8')); tags = oldDoc.tags || []; } catch (e) { /* 读取失败按空 tags */ }
+    let repoSlug = String(body.repo || 'default').trim();
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(repoSlug) || repoSlug === 'default') repoSlug = 'default';
+    const safe = title.replace(/[\\/:*?"<>|\r\n\t]/g, '').trim().slice(0, 80) || 'untitled';
+    try {
+      const content = serializeWikiDoc({ title, description, tags }, body.content || '');
+      const dir = repoSlug === 'default' ? WIKI_STORE_DIR : path.join(WIKI_STORE_DIR, repoSlug);
+      fs.mkdirSync(dir, { recursive: true });
+      const newRel = repoSlug === 'default' ? safe + '.md' : repoSlug + '/' + safe + '.md';
+      const newFull = resolveWikiFile(newRel);
+      fs.writeFileSync(newFull, content, 'utf8');
+      // 位置/标题变化时清理旧文件（避免残留副本）
+      if (oldFull !== newFull && fs.existsSync(oldFull)) { try { fs.unlinkSync(oldFull); } catch (e) { /* 删除失败不阻塞 */ } }
+      return sendJson(res, 200, { relPath: newRel, title });
+    } catch (e) {
+      return sendJson(res, 500, { error: { message: '保存文档失败：' + e.message } });
+    }
+  }
   if (urlPath === '/api/wiki/doc' && req.method === 'DELETE') {
     const full = resolveWikiFile(params.path);
     if (!full) return sendJson(res, 403, { error: { message: '非法文档路径' } });
@@ -1840,8 +1942,27 @@ function findArchiveSessionDir(groupName, taskId) {
       return sendJson(res, 404, { error: { message: '文档不存在' } });
     }
   }
+  // 仓库清单：GET 返回内置 + 用户仓库；POST 创建仓库（name 必填、category 限枚举、slug 自动 repo-N）
   if (urlPath === '/api/wiki/repos' && req.method === 'GET') {
-    return sendJson(res, 200, { repos: [{ category: 'note', slug: 'default', name: '本地文档库', mode: getWikiMode() }] });
+    return sendJson(res, 200, { repos: wikiRepoList() });
+  }
+  if (urlPath === '/api/wiki/repos' && req.method === 'POST') {
+    const body = await readBody(req);
+    const name = String(body.name || '').trim();
+    const category = String(body.category || '').trim();
+    if (!name) return sendJson(res, 400, { error: { message: '仓库名称不能为空' } });
+    if (!WIKI_CATEGORIES.includes(category)) {
+      return sendJson(res, 400, { error: { message: '仓库分类不合法（material/note/agent-doc/experience/archive）' } });
+    }
+    const repos = readWikiRepos();
+    const used = new Set(repos.map((r) => r.slug).filter(Boolean));
+    let n = 1;
+    let slug = 'repo-' + n;
+    while (used.has(slug)) { n++; slug = 'repo-' + n; }
+    const repo = { category, slug, name, createdAt: new Date().toISOString() };
+    repos.push(repo);
+    writeWikiRepos(repos);
+    return sendJson(res, 200, { ...repo, mode: getWikiMode() });
   }
   if (urlPath === '/api/wiki/search' && req.method === 'GET') {
     const q = String(params.q || '').trim().toLowerCase();
