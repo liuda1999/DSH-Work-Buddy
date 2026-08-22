@@ -8,6 +8,7 @@ release-assets/
 
 # ===== 运行时数据 =====
 WorkBuddy-Web/dshwb-data/
+WorkBuddy-Web/data/
 .wiki-cache/
 __pycache__/
 .pytest_cache/
@@ -25,6 +26,10 @@ _min_*.js
 _hdr_*.js
 _ws_raw.py
 _diag*.py
+
+# ===== 测试/诊断/脱敏检查脚本与标记（均不入库） =====
+_*.mjs
+_p3_marker.json
 
 # ===== 发布包 =====
 *.zip

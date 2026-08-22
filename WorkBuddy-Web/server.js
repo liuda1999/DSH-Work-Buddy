@@ -5,18 +5,68 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const HOST = '127.0.0.1';
-const PORT = 8765;
-const HARNESS_HOST = '127.0.0.1';
-const HARNESS_PORT = 3080;
+const HOST = process.env.DSH_WB_HOST || '127.0.0.1';
+const PORT = Number(process.env.DSH_WB_PORT || 8765);
+const HARNESS_HOST = process.env.DSH_WB_HARNESS_HOST || '127.0.0.1';
+const HARNESS_PORT = Number(process.env.DSH_WB_HARNESS_PORT || 3080);
 const HARNESS_DIR = path.resolve(__dirname, '..', 'deepseek-harness', 'deepseek-harness-master');
 const HARNESS_START_CMD = ['--import', 'tsx/esm', 'apps/cli/src/bin.ts', 'web'];
+// Wiki 文档库（llm-wiki VitePress 构建产物；站点 base=/llm-wiki-plugin/，网关按该前缀静态托管）
+const WIKI_BASE = '/llm-wiki-plugin/';
+const WIKI_DIST = path.resolve(__dirname, '..', 'llm-wiki', 'project', 'docs', '.vitepress', 'dist');
+// dsh 技能安装源/目标（dsh 从 <项目根>/.dsh/skills/<name>/SKILL.md 扫描技能，项目根即 e:\worke）
+const SKILL_SRC_DIR = path.resolve(__dirname, '..', 'llm-wiki', 'project', 'skills', 'llm-wiki');
+const SKILL_DST_DIR = path.resolve(__dirname, '..', '.dsh', 'skills', 'llm-wiki');
 const HARNESS_READY_TIMEOUT_MS = 60000;
 const HARNESS_PROBE_INTERVAL_MS = 2000;
 const HARNESS_PROBE_TIMEOUT_MS = 1500;
 
 let harnessProcess = null;
 let harnessUp = false;
+let harnessBooting = false;   // 拉起轮询中（防重复 spawn）
+
+// ---------- 数据目录（用户工作区根 / 任务专属目录） ----------
+const DATA_DIR = path.join(__dirname, 'data');
+const WS_DATA_DIR = path.join(DATA_DIR, 'workspaces');
+const TASK_DATA_DIR = path.join(DATA_DIR, 'tasks');
+// 智能体内置记忆库：按模板 id 分目录存放 MEMORY.md（长期画像，跨任务沉淀）
+const AGENTS_DATA_DIR = path.join(DATA_DIR, 'agents');
+// Wiki 轻量文档库（lite 模式存储根目录）与 llm-wiki 模式数据目录
+const WIKI_STORE_DIR = path.join(DATA_DIR, 'wiki');
+const WIKI_LLM_DIR = path.join(DATA_DIR, 'wiki-llm');
+// 归档数据根目录与归档组清单文件（归档会话按组落盘，组清单持久化）
+const ARCHIVE_DIR = path.join(DATA_DIR, 'archive');
+const ARCHIVE_GROUPS_FILE = path.join(ARCHIVE_DIR, 'groups.json');
+function ensureDataDirs() {
+  try {
+    fs.mkdirSync(WS_DATA_DIR, { recursive: true });
+    fs.mkdirSync(TASK_DATA_DIR, { recursive: true });
+    fs.mkdirSync(WIKI_STORE_DIR, { recursive: true });
+    fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
+  } catch (e) {
+    console.error('[DSH Work Buddy] 创建数据目录失败：', e.message);
+  }
+}
+ensureDataDirs();
+
+// 路径归一化（比较用）：统一斜杠 + 小写盘符
+function normPath(p) {
+  return String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+// 判断 dsh 工作区是否为任务专属目录（会话隔离用，不在「我的工作区」侧边栏显示）
+const isTaskWorkspace = (p) => normPath(p).startsWith(normPath(TASK_DATA_DIR) + '/');
+
+// dsh WorkspaceView → 前端工作区对象
+function mapWorkspace(w) {
+  return {
+    id: w.workspaceId,
+    name: w.title || path.basename(w.path || '') || '未命名工作区',
+    path: w.path,
+    sessionCount: (w.sessionIds || []).length,
+    createdAt: w.createdAt,
+    updatedAt: w.updatedAt
+  };
+}
 
 // ---------- 静态文件（含流式传输与 Range 支持，适配视频） ----------
 const mime = {
@@ -46,8 +96,13 @@ function serveStatic(urlPath, res, req) {
   if (p === '/') p = '/index.html';
   const filePath = path.join(__dirname, p);
   if (!filePath.startsWith(__dirname)) { res.writeHead(403); res.end('Forbidden'); return; }
+  serveFileFromDisk(filePath, res, req, () => { res.writeHead(404); res.end('Not found: ' + p); });
+}
+
+// 磁盘文件流式响应（含 Range 支持）：文件不存在时走 onMissing 回调
+function serveFileFromDisk(filePath, res, req, onMissing) {
   fs.stat(filePath, (err, st) => {
-    if (err || !st.isFile()) { res.writeHead(404); res.end('Not found: ' + p); return; }
+    if (err || !st.isFile()) { onMissing(); return; }
     const ext = path.extname(filePath).toLowerCase();
     const contentType = mime[ext] || 'application/octet-stream';
     const total = st.size;
@@ -77,6 +132,50 @@ function serveStatic(urlPath, res, req) {
   });
 }
 
+// ---------- Wiki 文档库托管（llm-wiki VitePress 构建产物，base=/llm-wiki-plugin/） ----------
+function serveWiki(urlPath, res, req) {
+  if (urlPath === '/llm-wiki-plugin') {
+    res.writeHead(301, { Location: WIKI_BASE });
+    res.end();
+    return;
+  }
+  const rel = urlPath.slice(WIKI_BASE.length) || 'index.html';
+  const filePath = path.join(WIKI_DIST, rel);
+  if (!filePath.startsWith(WIKI_DIST)) { res.writeHead(403); res.end('Forbidden'); return; }
+  if (!fs.existsSync(path.join(WIKI_DIST, 'index.html'))) {
+    // 构建产物缺失：给出明确指引，而不是回落到智能体 SPA（避免误判 Wiki 已就位）
+    res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end('<!doctype html><meta charset="utf-8"><title>Wiki 未就位</title><body style="font-family:system-ui;background:#0B0E13;color:#94A3B8;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center;max-width:520px"><h2 style="color:#E2E8F0">Wiki 文档库未就位</h2><p>构建产物缺失：<code>llm-wiki/project/docs/.vitepress/dist</code></p><p style="font-size:12.5px;color:#64748B">构建方法：<code>cd llm-wiki/project</code> → <code>pnpm install</code> → <code>pnpm docs:build</code>，完成后重启服务。也可用根目录 <code>start.bat</code> 一键完成。</p></div></body>');
+    return;
+  }
+  serveFileFromDisk(filePath, res, req, () => {
+    // cleanUrls=false 的产物链接均带 .html；无扩展名路径尝试补 .html 后仍失败才 404
+    serveFileFromDisk(filePath + '.html', res, req, () => {
+      res.writeHead(404); res.end('Not found: ' + urlPath);
+    });
+  });
+}
+
+// Wiki 就位检查（启动日志）：产物在则报就位 URL，缺失则给出构建指引
+function ensureWiki() {
+  if (fs.existsSync(path.join(WIKI_DIST, 'index.html'))) {
+    console.log(`[DSH Work Buddy] Wiki 文档库就位：http://${HOST}:${PORT}${WIKI_BASE}`);
+  } else {
+    console.warn(`[DSH Work Buddy] Wiki 文档库未就位（构建产物缺失）。构建方法：cd llm-wiki/project && pnpm install && pnpm docs:build，或使用根目录 start.bat 一键构建。`);
+  }
+}
+
+// 技能安装（启动时）：llm-wiki 项目技能复制到 dsh 技能扫描根 .dsh/skills/（目标已有 SKILL.md 则跳过，幂等）
+function ensureSkills() {
+  try {
+    if (fs.existsSync(path.join(SKILL_DST_DIR, 'SKILL.md'))) return;
+    fs.cpSync(SKILL_SRC_DIR, SKILL_DST_DIR, { recursive: true });
+    console.log('[DSH Work Buddy] 技能已安装：.dsh/skills/llm-wiki');
+  } catch (e) {
+    console.warn(`[DSH Work Buddy] 技能安装失败：${e.message}`);
+  }
+}
+
 // ---------- 智能体服务探测与拉起 ----------
 function probeHarness() {
   return new Promise((resolve) => {
@@ -94,15 +193,31 @@ function probeHarness() {
 async function ensureHarness() {
   if (await probeHarness()) {
     harnessUp = true;
-    console.log(`[DSH Work Buddy] 检测到 dsh 智能体服务已在 http://${HARNESS_HOST}:${HARNESS_PORT} 运行，跳过拉起。`);
+    if (!harnessProcess) {
+      console.log(`[DSH Work Buddy] 检测到外部/遗留智能体实例（:${HARNESS_PORT}），将复用；若实例异常请先关闭 3080 端口进程再重启。`);
+    } else {
+      console.log(`[DSH Work Buddy] 检测到 dsh 智能体服务已在 http://${HARNESS_HOST}:${HARNESS_PORT} 运行，跳过拉起。`);
+    }
     return;
   }
+  await spawnHarness();
+}
+
+// 拉起智能体子进程并轮询就绪（不重复拉起：harnessBooting 期间直接返回）
+async function spawnHarness() {
+  if (harnessBooting) return;
   if (!fs.existsSync(HARNESS_DIR)) {
     console.error(`[DSH Work Buddy] 未找到 dsh 智能体目录：${HARNESS_DIR}，智能体服务无法自动启动。`);
     return;
   }
+  harnessBooting = true;
   console.log(`[DSH Work Buddy] 启动 dsh 智能体服务（${HARNESS_DIR}）...`);
-  harnessProcess = spawn('node', HARNESS_START_CMD, {
+  // 端口/主机可配时显式传给 dsh（默认 3080/127.0.0.1 时不追加，保持原行为）；
+  // 否则 env 覆盖的 HARNESS_PORT 与拉起进程实际监听端口不一致，探测永远失败。
+  const harnessCmd = [...HARNESS_START_CMD];
+  if (HARNESS_PORT !== 3080) harnessCmd.push('--port', String(HARNESS_PORT));
+  if (HARNESS_HOST !== '127.0.0.1') harnessCmd.push('--host', HARNESS_HOST);
+  harnessProcess = spawn('node', harnessCmd, {
     cwd: HARNESS_DIR,
     stdio: 'inherit',
     env: { ...process.env }
@@ -120,16 +235,73 @@ async function ensureHarness() {
   const poll = async () => {
     if (await probeHarness()) {
       harnessUp = true;
+      harnessBooting = false;
       console.log(`[DSH Work Buddy] dsh 智能体服务就绪：http://${HARNESS_HOST}:${HARNESS_PORT}`);
       return;
     }
     if (Date.now() > deadline) {
+      harnessBooting = false;
       console.warn(`[DSH Work Buddy] 等待 dsh 智能体服务超时（${HARNESS_READY_TIMEOUT_MS / 1000}s），请检查其日志。`);
       return;
     }
     setTimeout(poll, HARNESS_PROBE_INTERVAL_MS);
   };
   poll();
+}
+
+// ---------- 智能体自愈：RPC 转发失败（连接不上 3080）时按需复活 ----------
+// 前端 waitHarnessReady 的 host.describe 轮询会持续打到网关 → 网关在转发失败时顺手拉起智能体，
+// 形成「智能体崩溃 → 下一次 RPC 自动复活」的闭环（冷却 10s 防拉起风暴）。
+const HARNESS_REVIVE_COOLDOWN_MS = 10000;
+let harnessLastReviveAt = 0;
+let harnessReviving = false;
+function reviveHarness() {
+  if (harnessReviving || harnessBooting) return;
+  if (Date.now() - harnessLastReviveAt < HARNESS_REVIVE_COOLDOWN_MS) return;
+  harnessReviving = true;
+  harnessLastReviveAt = Date.now();
+  probeHarness().then(async (up) => {
+    if (up) {
+      harnessUp = true;
+      harnessReviving = false;
+      return;
+    }
+    console.warn('[DSH Work Buddy] 检测到智能体服务不可达，自动拉起…');
+    await spawnHarness();
+    harnessReviving = false;
+  });
+}
+
+// ---------- 优雅关闭：退出信号 → 关网关 + 关 WS 连接 + 关智能体子进程（组件同关，不留孤儿） ----------
+const upgradeSockets = new Set(); // WS 升级 socket 跟踪（优雅关闭时需主动销毁，否则 server.close() 被长连接卡住）
+let shuttingDown = false;
+
+// 关闭智能体子进程：先 SIGTERM，1.5s 未退则 taskkill /T /F 杀进程树（Windows，含 tsx 派生的孙进程）
+function shutdownHarness() {
+  const p = harnessProcess;
+  if (!p || p.exitCode !== null || p.killed) return;
+  const pid = p.pid;
+  try { p.kill('SIGTERM'); } catch (e) { /* 已退出则忽略 */ }
+  setTimeout(() => {
+    if (harnessProcess && harnessProcess.exitCode === null && pid) {
+      try { spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }); } catch (e) { /* 忽略 */ }
+    }
+  }, 1500).unref();
+}
+
+function shutdown(reason, code = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[DSH Work Buddy] 正在关闭：${reason}`);
+  // 1) 主动销毁所有 WS 升级连接，避免 server.close() 等长连接卡住
+  for (const s of upgradeSockets) { try { s.destroy(); } catch (e) { /* 忽略 */ } }
+  upgradeSockets.clear();
+  // 2) 停止接受新连接（http server 关）→ 现有连接自然结束后立即退出；未 listen 场景由 3s 兜底兜住
+  try { server.close(() => process.exit(code)); } catch (e) { /* 忽略 */ }
+  // 3) 关闭智能体子进程（组件同关）
+  shutdownHarness();
+  // 4) 兜底强制退出：3s 后无论 close 回调是否触发都退出
+  setTimeout(() => process.exit(code), 3000).unref();
 }
 
 // ---------- 代理转发（HTTP + WebSocket） ----------
@@ -173,6 +345,9 @@ function shouldProxy(url) {
 function proxyHttp(req, res, targetPath) {
   const headers = { ...req.headers, host: `${HARNESS_HOST}:${HARNESS_PORT}` };
   delete headers.connection;
+  // dsh 连接围栏：浏览器请求携带 Origin（=8765）时与转发后的 Host（=3080）不匹配会被 403 forbidden。
+  // 网关是同源可信前端，统一改写 Origin 为智能体自身地址（与 proxyUpgrade 的 WS 升级处理一致）。
+  headers.origin = `http://${HARNESS_HOST}:${HARNESS_PORT}`;
   const proxyReq = http.request({
     host: HARNESS_HOST, port: HARNESS_PORT, path: targetPath, method: req.method, headers
   }, (proxyRes) => {
@@ -180,6 +355,8 @@ function proxyHttp(req, res, targetPath) {
     proxyRes.pipe(res);
   });
   proxyReq.on('error', () => {
+    // 智能体不可达：顺手触发自愈拉起（冷却防风暴），前端轮询期间即可恢复
+    reviveHarness();
     if (!res.headersSent) {
       res.writeHead(502, { 'Content-Type': 'application/json' });
     }
@@ -189,6 +366,9 @@ function proxyHttp(req, res, targetPath) {
 }
 
 function proxyUpgrade(req, socket, head) {
+  // 跟踪 WS 升级连接：优雅关闭时统一销毁，避免 server.close() 被长连接卡住
+  upgradeSockets.add(socket);
+  socket.on('close', () => upgradeSockets.delete(socket));
   const headers = { ...req.headers };
   delete headers.connection;
   headers.host = `${HARNESS_HOST}:${HARNESS_PORT}`;
@@ -216,35 +396,589 @@ function proxyUpgrade(req, socket, head) {
   proxyReq.end(head || undefined);
 }
 
-// ---------- 本地业务 mock 数据 ----------
+// ---------- 本地业务 mock 数据（工作区/插件/技能已直连 dsh RPC，此处仅本地数据） ----------
 const db = {
-  workspaces: [],
   tasks: [],
   archiveGroups: [],
-  wikiDocs: [],
-  plugins: [],
-  skills: [],
   agentTemplates: [],
-  pluginCommunity: []
+  pluginCommunity: [] // 用户自建收藏（内存；预置精选见 PLUGIN_COMMUNITY_SEED）
 };
+
+// 插件社区：预置精选站点（活跃、评价高，前端不可删除）+ 用户自建收藏
+const PLUGIN_COMMUNITY_SEED = [
+  { id: 'pc-topic-dsh-plugin', name: 'GitHub · dsh-plugin 专题', url: 'https://github.com/topics/dsh-plugin', tag: '社区', scale: '官方专题', color: '#4A90D9', desc: 'dsh 智能体插件官方聚合专题：插件、技能与扩展持续收录。' },
+  { id: 'pc-deepseek', name: 'DeepSeek · GitHub', url: 'https://github.com/deepseek-ai', tag: '官方', scale: '官方组织', color: '#4D6BFE', desc: 'DeepSeek 官方开源组织：模型、推理、Agent 相关仓库。' },
+  { id: 'pc-hf', name: 'Hugging Face', url: 'https://huggingface.co', tag: '模型', scale: '全球最大 AI 社区', color: '#FFD21E', desc: '模型、数据集、Agents、Skills 与 Spaces 一站式社区，智能体技能生态丰富。' },
+  { id: 'pc-claude-skills', name: 'Anthropic · Claude Skills', url: 'https://github.com/anthropics/skills', tag: '技能', scale: '官方 Skills 仓库', color: '#D97757', desc: 'Claude 官方技能仓库：Agent 技能定义、目录约定与最佳实践。' },
+  { id: 'pc-openai-agents', name: 'OpenAI Agents SDK', url: 'https://github.com/openai/openai-agents-python', tag: '智能体', scale: '50k+ Stars', color: '#10A37F', desc: 'OpenAI 官方智能体框架：多智能体、工具调用与可观测追踪。' },
+  { id: 'pc-dify', name: 'Dify', url: 'https://github.com/langgenius/dify', tag: '智能体', scale: '100k+ Stars', color: '#3B82F6', desc: 'LLM 应用开发平台：Agent 编排、工作流与插件市场生态。' },
+  { id: 'pc-smolagents', name: 'Hugging Face · smolagents', url: 'https://github.com/huggingface/smolagents', tag: '智能体', scale: '25k+ Stars', color: '#FF9D00', desc: '极简智能体框架：Code Agent 与工具调用，社区活跃度高。' },
+  { id: 'pc-ollama', name: 'Ollama', url: 'https://github.com/ollama/ollama', tag: '模型', scale: '100k+ Stars', color: '#7C3AED', desc: '本地大模型运行社区：一行命令拉起模型，插件与工具生态完善。' },
+  { id: 'pc-modelscope', name: '魔搭 ModelScope', url: 'https://modelscope.cn', tag: '社区', scale: '中文社区', color: '#FF5A00', desc: '阿里达摩院 AI 开源社区：模型、数据集与 Agent 应用，中文活跃度高。' }
+];
 
 function nextId(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
 function seedData() {
-  db.workspaces = [
-    { id: 'ws_default', name: '默认工作区' }
-  ];
+  // 演示任务（工作区改为按需绑定；真实工作区列表由 dsh workspace.list 提供）
   const now = new Date().toISOString();
   db.tasks = [
-    { id: nextId('t'), title: '完成项目总览设计', status: 'in_progress', workspaceId: 'ws_default', deadline: null, createdAt: now, completedAt: null },
-    { id: nextId('t'), title: '整理 Wiki 文档', status: 'today', workspaceId: 'ws_default', deadline: now, createdAt: now, completedAt: null },
-    { id: nextId('t'), title: '集成智能体组件', status: 'completed', workspaceId: 'ws_default', deadline: null, createdAt: now, completedAt: now },
-    { id: nextId('t'), title: '修复逾期任务提醒', status: 'overdue', workspaceId: 'ws_default', deadline: '2024-01-01T00:00:00Z', createdAt: now, completedAt: null }
+    { id: nextId('t'), title: '完成项目总览设计', status: 'in_progress', workspaceId: null, dir: null, deadline: null, createdAt: now, completedAt: null },
+    { id: nextId('t'), title: '整理 Wiki 文档', status: 'today', workspaceId: null, dir: null, deadline: now, createdAt: now, completedAt: null },
+    { id: nextId('t'), title: '集成智能体组件', status: 'completed', workspaceId: null, dir: null, deadline: null, createdAt: now, completedAt: null },
+    { id: nextId('t'), title: '修复逾期任务提醒', status: 'overdue', workspaceId: null, dir: null, deadline: '2024-01-01T00:00:00Z', createdAt: now, completedAt: null }
   ];
+  // 演示任务目录兜底：创建时即分配专属目录（演示任务无工作区归属，落 data/tasks/<id>；失败不阻塞演示数据）
+  db.tasks.forEach((t) => { ensureTaskDir(t); });
 }
-seedData();
+
+// ---------- 任务持久化（任务目录内 task.json：重启恢复任务及其会话关联） ----------
+// 任务元数据文件名（存于任务专属目录内，随任务全字段序列化）
+const TASK_FILE = 'task.json';
+
+// 写任务元数据：dir 有效且存在才落盘；失败静默 warn（不阻塞业务）
+function saveTaskFile(task) {
+  if (!task || !task.dir || !fs.existsSync(task.dir)) return;
+  try {
+    fs.writeFileSync(path.join(task.dir, TASK_FILE), JSON.stringify(task, null, 2), 'utf8');
+  } catch (e) {
+    console.warn('[DSH Work Buddy] 写入 task.json 失败：', e.message);
+  }
+}
+
+// 从磁盘恢复任务：收集 data/tasks/<任务>/task.json 与 data/workspaces/<工作区>/<任务>/task.json
+// （一级目录里出现 task.json 即视为任务目录）；无 task.json 的目录静默跳过（旧任务/空目录），
+// 存在但解析失败才 warn；按 createdAt 升序返回
+function loadTasksFromDisk() {
+  const tasks = [];
+  const visit = (dir) => {
+    const file = path.join(dir, TASK_FILE);
+    if (!fs.existsSync(file)) return; // 旧任务目录/空目录：无档案文件，静默跳过
+    try {
+      const task = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (task && task.id) tasks.push(task);
+      else console.warn('[DSH Work Buddy] 跳过无效 task.json：', file);
+    } catch (e) {
+      console.warn('[DSH Work Buddy] 跳过损坏的 task.json：', file, e.message);
+    }
+  };
+  // 兜底任务目录：data/tasks/<id>/
+  try {
+    for (const ent of fs.readdirSync(TASK_DATA_DIR, { withFileTypes: true })) {
+      if (ent.isDirectory()) visit(path.join(TASK_DATA_DIR, ent.name));
+    }
+  } catch (e) { /* 目录缺失时跳过 */ }
+  // 工作区下任务目录：data/workspaces/<工作区>/<taskId>/
+  try {
+    for (const wsEnt of fs.readdirSync(WS_DATA_DIR, { withFileTypes: true })) {
+      if (!wsEnt.isDirectory()) continue;
+      const wsDir = path.join(WS_DATA_DIR, wsEnt.name);
+      for (const ent of fs.readdirSync(wsDir, { withFileTypes: true })) {
+        if (ent.isDirectory()) visit(path.join(wsDir, ent.name));
+      }
+    }
+  } catch (e) { /* 目录缺失时跳过 */ }
+  tasks.sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  return tasks;
+}
+
+// ---------- 归档组持久化（data/archive/groups.json：组清单，含手动新建的空组） ----------
+// 启动加载组清单：文件不存在/损坏/为空 → 给默认组并落盘（保证组 id 跨重启稳定）
+function loadArchiveGroups() {
+  try {
+    const arr = JSON.parse(fs.readFileSync(ARCHIVE_GROUPS_FILE, 'utf8'));
+    if (Array.isArray(arr)) {
+      const groups = arr.filter((g) => g && g.id && g.name);
+      if (groups.length) {
+        db.archiveGroups = groups;
+        return;
+      }
+    }
+  } catch (e) { /* 文件缺失/损坏 → 默认组 */ }
+  db.archiveGroups = [{ id: nextId('ag'), name: '默认组' }];
+  saveArchiveGroups();
+}
+
+// 归档组清单落盘（新建组后调用）
+function saveArchiveGroups() {
+  try {
+    fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
+    fs.writeFileSync(ARCHIVE_GROUPS_FILE, JSON.stringify(db.archiveGroups, null, 2), 'utf8');
+  } catch (e) {
+    console.warn('[DSH Work Buddy] 写入归档组清单失败：', e.message);
+  }
+}
+
+// 目录名安全化（归档目录用）：去 Windows 非法字符与空白控制符，截断 60 字符，空值兜底
+function safeName(name, fallback) {
+  const s = String(name || '').replace(/[\\/:*?"<>|\r\n\t]/g, '').trim().slice(0, 60);
+  return s || fallback || '未命名';
+}
+
+// ---------- 启动初始化：任务磁盘恢复（核心：重启不丢对话记录与会话关联） ----------
+loadArchiveGroups(); // 归档组清单（groups.json）
+(async () => {
+  const restored = loadTasksFromDisk();
+  if (restored.length) {
+    // 磁盘有任务 → 直接恢复，跳过 seedData（不再注入演示任务，幂等）
+    db.tasks = restored;
+    console.log(`[DSH Work Buddy] 已从磁盘恢复 ${restored.length} 个任务（跳过演示数据注入）。`);
+  } else {
+    seedData();
+    // seed 任务逐个落盘：ensureTaskDir 为 async（dir 赋值在微任务后），等目录解析完成再写 task.json
+    await Promise.all(db.tasks.map((t) => ensureTaskDir(t)));
+    db.tasks.forEach((t) => saveTaskFile(t));
+  }
+})();
+
+// 工作区路径缓存（workspaceId → path）：GET /api/workspaces 时填充；任务目录解析未命中时查 workspace.list 补齐
+const workspaceCache = new Map();
+
+// 解析任务专属目录：workspaceId 有效时优先建在工作区目录下（<工作区path>/<taskId>），否则兜底 data/tasks/<taskId>
+async function taskDirFor(taskId, workspaceId) {
+  if (workspaceId) {
+    if (!workspaceCache.has(workspaceId)) {
+      try {
+        const v = await harnessRpc('workspace.list', {});
+        (v.items || []).forEach((w) => { if (w.workspaceId) workspaceCache.set(w.workspaceId, w.path); });
+      } catch (e) {
+        console.warn('[DSH Work Buddy] 查询工作区失败，任务目录兜底 data/tasks：', e.message);
+      }
+    }
+    const wsPath = workspaceCache.get(workspaceId);
+    if (wsPath) return path.join(wsPath, taskId);
+  }
+  return path.join(TASK_DATA_DIR, taskId);
+}
+
+// 任务目录兜底（async）：dir 已存在且目录在 → 不动；dir 在但目录丢失 → 按原路径重建；无 dir → taskDirFor 解析（优先工作区下）并写回
+// （会话隔离与智能体档案落盘的物理边界）
+async function ensureTaskDir(task) {
+  if (!task) return;
+  if (task.dir) {
+    if (!fs.existsSync(task.dir)) {
+      try { fs.mkdirSync(task.dir, { recursive: true }); } catch (e) { /* 目录创建失败时任务仍可用 */ }
+    }
+    return;
+  }
+  task.dir = await taskDirFor(task.id, task.workspaceId);
+  try { fs.mkdirSync(task.dir, { recursive: true }); } catch (e) { /* 目录创建失败时任务仍可创建 */ }
+}
+
+// ---------- 智能体内置记忆（长期画像，按模板 id 存放于 data/agents/<tplId>/MEMORY.md） ----------
+// 初始记忆模板：分节结构固定，智能体按节维护；now 为初次对话时间
+function memoryTemplate(now) {
+  return `# 智能体长期记忆
+
+> 维护规则：本文件只记录用户的特点与偏好类信息，不记录具体做过哪些任务及其详细内容。
+
+## 用户画像（说话方式 / 喜好 / 忌讳 / 沟通方式）
+（待补充）
+
+## 用户格外强调过的事
+（待补充）
+
+## 因用户特点需额外考虑
+（待补充）
+
+## 关键日期
+- 初次对话时间：${now}
+（其余待补充）
+
+## 事项概览（大致完成数量 / 周期性事项）
+（待补充）
+`;
+}
+
+// 智能体记忆文件路径：data/agents/<tplId>/MEMORY.md（tplId 清洗防路径穿越，空值归 '_default'）
+function agentMemoryFile(tplId) {
+  const safe = String(tplId || '').replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || '_default';
+  return path.join(AGENTS_DATA_DIR, safe, 'MEMORY.md');
+}
+
+// 读取智能体内置记忆：不存在则用模板初始化（懒建）并返回内容；tplId 为空时归 '_default'
+function getAgentMemory(tplId) {
+  const file = agentMemoryFile(tplId);
+  try {
+    if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8');
+    const content = memoryTemplate(new Date().toISOString());
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content, 'utf8');
+    return content;
+  } catch (e) {
+    return memoryTemplate(new Date().toISOString()); // 落盘失败时退回模板内容，会话仍可进行
+  }
+}
+
+// ---------- 项目工作指南（注入 AGENTS.md，动态注入资源仓库与任务目录绝对路径） ----------
+function PROJECT_GUIDE_MD(wikiDir, taskDir) {
+  return `## 项目工作指南
+
+### 资源仓库
+- 资源仓库 = 本项目的 Wiki 文档库（是文档集合概念，不是本地文件夹！）。
+- 用户说「保存到资源仓库」= 创建一份带元数据的 markdown 文档写入 ${wikiDir}（绝对路径）。
+- 文档规范：frontmatter 三要素 title（名称）/ description（简介）/ tags（数组，至少 3 个标签），frontmatter 之后是正文。
+- 禁止把「资源仓库」理解为在磁盘新建目录。
+
+### 检索约定
+- 本地 wiki 检索一律使用 wiki_search.py --no-embed（纯词法 BM25，零依赖零模型）。
+- 未经用户明确要求：禁止运行 init_wiki.py / setup_wiki.py、禁止 pip/uv/npm 安装任何依赖、禁止下载嵌入模型（本地未配置 FastEmbed 模型，混合检索不可用）。
+
+### 任务文件夹
+- ${taskDir}（绝对路径）是当前任务专属文件夹。
+- 会话产生的文件、上传的文件、生成的文件一律保存在此目录。
+- 任务结束归档时以此目录为数据源。
+
+### 会话书架
+- 用户挂载的参考文档会列在下方「会话书架」一节（文件名/所属分类/所属库名/文件路径）。
+- 需要文档内容时按文件路径读取全文。
+`;
+}
+
+// 分类中文名（AGENTS.md 书架表展示用）：note → 个人笔记，其它原样
+function categoryLabel(c) {
+  return c === 'note' ? '个人笔记' : (c || '');
+}
+
+// 组装任务目录 AGENTS.md 全文：身份 + 项目工作指南 + 长期记忆 +（书架非空时）会话书架 + 记忆维护说明
+// （dsh 会话以任务目录为 cwd 读取该文件；shelfDocs 为 [{name,category,library,path}]，可空/缺省兼容旧调用）
+function composeAgentsMd(task, memoryContent, shelfDocs) {
+  const tpl = task && task.agentTemplate;
+  const identity = tpl
+    ? `# 智能体身份\n\n你是「${tpl.name || '未命名智能体'}」。\n- 运行预设：${tpl.preset || 'standard'}\n- 角色设定：${tpl.prompt || '（无）'}`
+    : '# 智能体身份\n\n你是 DSH Work Buddy 智能体助手。';
+  let md = `${identity}
+
+${PROJECT_GUIDE_MD(wikiGuideDir(), (task && task.dir) || TASK_DATA_DIR)}
+
+## 长期记忆
+
+${memoryContent}
+`;
+  if (shelfDocs && shelfDocs.length) {
+    md += `
+## 会话书架（用户挂载的参考资料）
+| 文件名 | 所属分类 | 所属库名 | 文件路径 |
+| --- | --- | --- | --- |
+`;
+    for (const d of shelfDocs) {
+      md += `| ${d.name || ''} | ${categoryLabel(d.category)} | ${d.library || ''} | ${d.path || ''} |\n`;
+    }
+    md += `（以上为文档清单；需要文档具体内容时，按"文件路径"读取该文件。）\n`;
+  }
+  md += `
+## 记忆维护说明
+对话过程中若了解到用户的新特点（说话方式、喜好、忌讳、沟通方式、格外强调的事、需额外考虑的事、关键日期、大致事项数量与周期性事项），请即时更新本目录下的 MEMORY.md 文件（保持上述分节结构）。只记用户特点，不记录具体任务内容。
+`;
+  return md;
+}
+
+// ---------- 会话书架（任务挂载的 wiki 参考文档：task.dir/.workbuddy/shelf.json） ----------
+// 读取书架：task 无 dir → null（调用方兜底 []）；shelf.json 不存在/损坏 → []
+function readShelf(task) {
+  if (!task || !task.dir) return null;
+  try {
+    const file = path.join(task.dir, '.workbuddy', 'shelf.json');
+    if (!fs.existsSync(file)) return [];
+    const arr = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+// 书架条目 → AGENTS.md 会话书架节行数据（只保留 文件名/所属分类/所属库名 + 文档库内绝对路径）
+function shelfDocsForAgents(task) {
+  return (readShelf(task) || []).map((d) => ({
+    name: d.title || '',
+    category: d.category || 'note',
+    library: d.library || '本地文档库',
+    path: path.join(WIKI_STORE_DIR, d.relPath || '')
+  }));
+}
+
+// 写书架并重组任务目录智能体档案：shelf.json 落盘 + AGENTS.md 全量重写（MEMORY.md 存在则不动，种子逻辑沿用）
+function writeShelfAndAgents(task, shelf) {
+  if (!task || !task.dir) return;
+  try {
+    fs.mkdirSync(path.join(task.dir, '.workbuddy'), { recursive: true });
+    fs.writeFileSync(path.join(task.dir, '.workbuddy', 'shelf.json'), JSON.stringify(shelf || [], null, 2), 'utf8');
+    writeTaskAgentFiles(task);
+  } catch (e) {
+    console.warn('[DSH Work Buddy] 写入会话书架失败：', e.message);
+  }
+}
+
+// 任务目录智能体档案落盘：AGENTS.md（身份+指南+记忆+书架+维护说明）；MEMORY.md 仅在缺失时写入记忆种子
+function writeTaskAgentFiles(task) {
+  if (!task.dir || !fs.existsSync(task.dir)) return;
+  try {
+    const memory = getAgentMemory(task.agentTemplate && task.agentTemplate.id);
+    fs.writeFileSync(path.join(task.dir, 'AGENTS.md'), composeAgentsMd(task, memory, shelfDocsForAgents(task)), 'utf8');
+    const memFile = path.join(task.dir, 'MEMORY.md');
+    if (!fs.existsSync(memFile)) fs.writeFileSync(memFile, memory, 'utf8');
+  } catch (e) {
+    console.warn('[DSH Work Buddy] 写入任务智能体档案失败：', e.message);
+  }
+}
+
+// ---------- Wiki 轻量文档库（lite：data/wiki 下 markdown + frontmatter；mode 可切 llm-wiki） ----------
+// 模式标记文件：lite（默认，轻量本地库）/ llm-wiki（写入 data/wiki-llm 数据源目录）
+const WIKI_MODE_FILE = path.join(WIKI_STORE_DIR, '.mode');
+
+// llm-wiki 模式骨架文档（首次写入文档时创建，存在则不覆盖）
+const LLM_WIKI_SCHEMA_MD = `# llm-wiki 数据结构说明
+
+- \`sources/\`：知识源文档（markdown，frontmatter 三要素 title / description / tags）
+- 知识源由网关在 llm-wiki 模式下自动写入本目录
+`;
+const LLM_WIKI_INDEX_MD = `# llm-wiki 文档库
+
+知识源位于 \`sources/\` 目录。
+`;
+
+// 读取 wiki 模式（默认 lite；文件损坏/缺失均回退 lite）
+function getWikiMode() {
+  try {
+    return fs.readFileSync(WIKI_MODE_FILE, 'utf8').trim() === 'llm-wiki' ? 'llm-wiki' : 'lite';
+  } catch (e) {
+    return 'lite';
+  }
+}
+
+// 写入 wiki 模式标记
+function setWikiMode(mode) {
+  fs.mkdirSync(WIKI_STORE_DIR, { recursive: true });
+  fs.writeFileSync(WIKI_MODE_FILE, mode, 'utf8');
+}
+
+// 指南中的资源仓库写入目录：lite = WIKI_STORE_DIR；llm-wiki = WIKI_LLM_DIR/sources（与 POST /api/wiki/doc 落盘位置一致）
+function wikiGuideDir() {
+  return getWikiMode() === 'llm-wiki' ? path.join(WIKI_LLM_DIR, 'sources') : WIKI_STORE_DIR;
+}
+
+// 解析 wiki 文档：frontmatter（title/description/tags）+ 正文；容忍缺项与格式差异
+function parseWikiDoc(text) {
+  const raw = String(text || '');
+  const out = { title: '', description: '', tags: [], body: raw };
+  const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!m) return out;
+  out.body = raw.slice(m[0].length);
+  for (const line of m[1].split(/\r?\n/)) {
+    const kv = line.match(/^(title|description|tags)\s*:\s*(.*)$/);
+    if (!kv) continue;
+    if (kv[1] === 'tags') {
+      const t = kv[2].trim();
+      const arr = t.match(/^\[(.*)\]$/);
+      out.tags = (arr ? arr[1] : t).split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+    } else {
+      out[kv[1]] = kv[2].trim().replace(/^['"]|['"]$/g, '');
+    }
+  }
+  return out;
+}
+
+// 序列化 wiki 文档：frontmatter 三要素 + 空行 + 正文
+function serializeWikiDoc(meta, body) {
+  const tags = Array.isArray(meta.tags) ? meta.tags.filter(Boolean) : [];
+  return `---\ntitle: ${meta.title || ''}\ndescription: ${meta.description || ''}\ntags: [${tags.join(', ')}]\n---\n\n${body || ''}`;
+}
+
+// 扫描轻量文档库：递归（限深 2）*.md，跳过 . 开头目录/文件；withBody 时附带正文（检索用）
+function listWikiDocs(withBody = false) {
+  const docs = [];
+  const walk = (dir, rel, depth) => {
+    let list;
+    try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const ent of list) {
+      if (ent.name.startsWith('.')) continue;
+      const relPath = rel ? rel + '/' + ent.name : ent.name;
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (depth < 2) walk(full, relPath, depth + 1);
+      } else if (ent.isFile() && /\.md$/i.test(ent.name)) {
+        let text = '';
+        try { text = fs.readFileSync(full, 'utf8'); } catch (e) { /* 读取失败按空文档处理 */ }
+        const meta = parseWikiDoc(text);
+        let mtime = null;
+        try { mtime = fs.statSync(full).mtime.toISOString(); } catch (e) { /* 取时间失败置空 */ }
+        docs.push(Object.assign(
+          { relPath, title: meta.title || ent.name.replace(/\.md$/i, ''), description: meta.description, tags: meta.tags, category: 'note', mtime },
+          withBody ? { body: meta.body } : null
+        ));
+      }
+    }
+  };
+  walk(WIKI_STORE_DIR, '', 1);
+  return docs;
+}
+
+// 解析文档库相对路径 → 绝对路径（防目录穿越：resolve 后必须仍在 WIKI_STORE_DIR 内）
+function resolveWikiFile(rel) {
+  const full = path.resolve(WIKI_STORE_DIR, String(rel || ''));
+  if (full !== WIKI_STORE_DIR && !full.startsWith(WIKI_STORE_DIR + path.sep)) return null;
+  return full;
+}
+
+// ---------- Wiki 知识图谱构建（轻量、无外部依赖） ----------
+// 图模型：document / section 两类节点；边含 contains（文档含章节）、part_of（章节属文档）、
+// mentions（文档正文提及另一文档标题 → 跨文档引用关系）。图谱按 (category, repo) 缓存，
+// 并以「文档集合指纹」（relPath + mtime）失效：新建/编辑文档后自动重建。
+const wikiGraphCache = new Map(); // "cat/repo" → {nodes, edges, fp}
+const GRAPH_MAX_NODES = 400;      // 节点总数上限（防大文档库膨胀）
+const GRAPH_MAX_SECTIONS = 24;    // 单文档章节节点上限（长文档自动拆章节）
+const GRAPH_MIN_MENTION_LEN = 4;  // 跨文档提及的标题最短长度（避免短标题误匹配）
+
+// 文档集合指纹：relPath + mtime（不读正文，开销小）
+function wikiDocsFingerprint() {
+  return listWikiDocs().map((d) => `${d.relPath}:${d.mtime || ''}`).join('|');
+}
+
+// 提取 markdown 标题（# 至 ####），去重并剥离行内符号
+function extractMarkdownHeadings(text) {
+  const out = [];
+  const seen = new Set();
+  const re = /^#{1,4}\s+(.+)$/gm;
+  let m;
+  while ((m = re.exec(String(text || ''))) !== null) {
+    const raw = m[1].trim();
+    const h = raw.replace(/[*_`[\]()<>#]/g, '').trim();
+    if (!h || h.length > 60) continue;
+    const key = h.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(h);
+    if (out.length >= GRAPH_MAX_SECTIONS) break;
+  }
+  return out;
+}
+
+// 构建图谱：返回 {nodes, edges}（nodes 按 id 去重）
+function buildWikiGraph(category, repo) {
+  const docs = listWikiDocs(true); // 带正文（frontmatter 已在 parseWikiDoc 剥离）
+  const nodes = [];
+  const edges = [];
+  const nodeIds = new Set();
+  const edgeSeen = new Set();
+  const pushNode = (n) => {
+    if (nodeIds.has(n.id)) return;
+    nodeIds.add(n.id);
+    nodes.push(n);
+  };
+  const pushEdge = (subject, object, predicate) => {
+    if (subject === object) return;
+    const key = subject + '\u0000' + predicate + '\u0000' + object;
+    if (edgeSeen.has(key)) return;
+    edgeSeen.add(key);
+    edges.push({ subject, object, predicate, confidence: 1 });
+  };
+  const full = () => nodes.length >= GRAPH_MAX_NODES;
+
+  // 1) 文档节点 + 章节节点（长文档自动拆章节为图谱节点）+ contains/part_of 层级边
+  const docIdByPath = new Map();
+  for (const d of docs) {
+    if (full()) break;
+    const id = 'doc:' + d.relPath;
+    docIdByPath.set(d.relPath, id);
+    pushNode({ id, node_type: 'document', title: d.title || d.relPath, path: d.relPath });
+  }
+  for (const d of docs) {
+    if (full()) break;
+    const docId = docIdByPath.get(d.relPath);
+    if (!docId) continue;
+    for (const h of extractMarkdownHeadings(d.body)) {
+      if (full()) break;
+      const sid = 'sec:' + d.relPath + '#' + h;
+      pushNode({ id: sid, node_type: 'section', title: h, path: d.relPath + '#' + h });
+      pushEdge(docId, sid, 'contains');
+      pushEdge(sid, docId, 'part_of');
+    }
+  }
+  // 2) 跨文档 mentions：文档正文提及另一文档标题（长度 ≥ 4 才判定，避免短标题误匹配）
+  const titleToDoc = new Map();
+  for (const d of docs) {
+    const t = (d.title || '').trim();
+    if (t.length >= GRAPH_MIN_MENTION_LEN) titleToDoc.set(t.toLowerCase(), 'doc:' + d.relPath);
+  }
+  for (const d of docs) {
+    if (full()) break;
+    const docId = 'doc:' + d.relPath;
+    const lower = (d.body || '').toLowerCase();
+    for (const [t, target] of titleToDoc) {
+      if (target === docId) continue;
+      if (lower.includes(t)) pushEdge(docId, target, 'mentions');
+    }
+  }
+  return { nodes, edges };
+}
+
+// 读取（或懒构建）图谱数据：指纹未变走缓存；文档集合变化 / force 时重建
+function wikiGraphData(category, repo, force = false) {
+  const key = String(category || 'note') + '/' + String(repo || 'default');
+  const fp = wikiDocsFingerprint();
+  const hit = wikiGraphCache.get(key);
+  if (!force && hit && hit.fp === fp) return hit;
+  const g = buildWikiGraph(category, repo);
+  const entry = { nodes: g.nodes, edges: g.edges, fp };
+  if (wikiGraphCache.size >= 20) wikiGraphCache.clear(); // 防内存膨胀
+  wikiGraphCache.set(key, entry);
+  return entry;
+}
+
+// 任务目录文件树扫描：限深 4、跳过 . 开头目录；返回 {entries, fileCount, size}
+function scanTreeDir(dir, depth) {
+  const out = { entries: [], fileCount: 0, size: 0 };
+  let list;
+  try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return out; }
+  for (const ent of list) {
+    const full = path.join(dir, ent.name);
+    if (ent.isDirectory()) {
+      if (ent.name.startsWith('.')) continue;
+      const child = { name: ent.name, type: 'dir', size: 0, children: [] };
+      if (depth < 4) {
+        const sub = scanTreeDir(full, depth + 1);
+        child.children = sub.entries;
+        out.fileCount += sub.fileCount;
+        out.size += sub.size;
+      }
+      out.entries.push(child);
+    } else if (ent.isFile()) {
+      let size = 0;
+      try { size = fs.statSync(full).size; } catch (e) { /* 取大小失败按 0 计 */ }
+      out.entries.push({ name: ent.name, type: 'file', ext: path.extname(ent.name).slice(1).toLowerCase(), size });
+      out.fileCount += 1;
+      out.size += size;
+    }
+  }
+  return out;
+}
+
+// 拍平 scanTreeDir 嵌套树为文件清单（rel 用正斜杠含子目录；跳过档案文件与 . 开头文件）
+// 归档/文件列表只关心对话产物：AGENTS.md、MEMORY.md、task.json 属系统档案，不列入
+const TASK_META_FILES = ['AGENTS.md', 'MEMORY.md', TASK_FILE];
+function flattenTreeFiles(entries, rel, out) {
+  for (const ent of entries || []) {
+    const relName = rel ? rel + '/' + ent.name : ent.name;
+    if (ent.type === 'dir') {
+      flattenTreeFiles(ent.children, relName, out);
+    } else if (ent.type === 'file') {
+      if (ent.name.startsWith('.') || TASK_META_FILES.includes(ent.name)) continue;
+      out.push({ name: relName, size: ent.size });
+    }
+  }
+}
+
+// 任务对话产物清单：扫描任务目录（复用 scanTreeDir 递归，跳过 .workbuddy/ 等 . 开头目录），
+// 排除 AGENTS.md / MEMORY.md / task.json 与 . 开头文件；返回 [{name,size,sourcePath}]
+function taskArtifactFiles(task) {
+  const files = [];
+  if (!task || !task.dir || !fs.existsSync(task.dir)) return files;
+  flattenTreeFiles(scanTreeDir(task.dir, 1).entries, '', files);
+  files.forEach((f) => { f.sourcePath = path.join(task.dir, f.name); });
+  return files;
+}
 
 function sendJson(res, code, data) {
   res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -269,9 +1003,92 @@ function harnessRpc(method, payload = {}) {
         } catch (e) { reject(e); }
       });
     });
-    req.on('error', reject);
+    req.on('error', (e) => { reviveHarness(); reject(e); });
     req.end(body);
   });
+}
+
+// user/message 事件首文本块（容忍 content 为文本块数组 / 纯字符串 / message.content 三种形态）
+function firstUserText(ev) {
+  const data = (ev && ev.data) || {};
+  let blocks = data.content;
+  if (typeof blocks === 'string') return blocks;
+  if (!Array.isArray(blocks) && data.message && Array.isArray(data.message.content)) blocks = data.message.content;
+  if (!Array.isArray(blocks)) return '';
+  const first = blocks.find((b) => b && b.type === 'text' && typeof b.text === 'string');
+  return first ? first.text : '';
+}
+
+// 归档会话统计（尽力而为，调用方兜底失败）：
+// messages = events 中 type==='user/message' 且首文本块不以 "Current runtime context" 开头的事件数（排除运行时上下文注入）；
+// tokens = projections.values.tokenUsage 四项之和（首页快照）；session.history 默认每页 50 条，按 beforeSeq 翻页累加
+async function archiveSessionStats(sessionId) {
+  let messages = 0;
+  let tokens = 0;
+  let beforeSeq;
+  for (let page = 0; page < 50; page++) { // 翻页上限 50 页，防异常会话拖垮归档
+    const payload = { sessionId, maxMessages: 200 };
+    if (beforeSeq !== undefined) payload.beforeSeq = beforeSeq;
+    const v = await harnessRpc('session.history', payload);
+    const entries = Array.isArray(v.events) ? v.events : [];
+    for (const ent of entries) {
+      const ev = ent && ent.event ? ent.event : ent; // HistoryEntry 包裹或裸事件均容忍
+      if (ev && ev.type === 'user/message' && !firstUserText(ev).startsWith('Current runtime context')) messages += 1;
+    }
+    if (page === 0 && v.projections && v.projections.values && v.projections.values.tokenUsage) {
+      const u = v.projections.values.tokenUsage;
+      tokens = (u.uncachedInputTokens || 0) + (u.outputTokens || 0) + (u.cacheReadTokens || 0) + (u.cacheWriteTokens || 0);
+    }
+    if (!v.hasMore) break;
+    const seqs = entries.map((e) => (e && e.event ? e.event.seq : undefined)).filter((s) => typeof s === 'number');
+    if (!seqs.length) break;
+    beforeSeq = Math.min(...seqs);
+  }
+  return { messages, tokens };
+}
+
+// assistant/message 事件文本（容忍 data.content 文本块 / data.message.content / data.text 多形态）
+function assistantText(ev) {
+  const data = (ev && ev.data) || {};
+  let blocks = data.content;
+  if (typeof blocks === 'string') return blocks;
+  if (!Array.isArray(blocks) && data.message && Array.isArray(data.message.content)) blocks = data.message.content;
+  if (Array.isArray(blocks)) {
+    const t = blocks.filter((b) => b && typeof b.text === 'string').map((b) => b.text).join('\n').trim();
+    if (t) return t;
+  }
+  if (typeof data.text === 'string' && data.text.trim()) return data.text.trim();
+  if (data.message && typeof data.message.text === 'string' && data.message.text.trim()) return data.message.text.trim();
+  return '';
+}
+
+// 拉取会话完整对话（user/assistant 消息，按时间顺序，上限 500 条防超大会话拖垮归档）
+async function fetchSessionConversation(sessionId) {
+  const conv = [];
+  let beforeSeq;
+  for (let page = 0; page < 50 && conv.length < 500; page++) {
+    const payload = { sessionId, maxMessages: 200 };
+    if (beforeSeq !== undefined) payload.beforeSeq = beforeSeq;
+    const v = await harnessRpc('session.history', payload);
+    const entries = Array.isArray(v.events) ? v.events : [];
+    for (const ent of entries) {
+      const ev = ent && ent.event ? ent.event : ent; // HistoryEntry 包裹或裸事件均容忍
+      if (!ev || !ev.type || !ev.time) continue;
+      if (ev.type === 'user/message') {
+        const t = firstUserText(ev);
+        if (t && !t.startsWith('Current runtime context')) conv.push({ role: 'user', text: t, time: ev.time });
+      } else if (ev.type === 'assistant/message') {
+        const t = assistantText(ev);
+        if (t) conv.push({ role: 'assistant', text: t, time: ev.time });
+      }
+      if (conv.length >= 500) break;
+    }
+    if (!v.hasMore) break;
+    const seqs = entries.map((e) => (e && e.event ? e.event.seq : undefined)).filter((s) => typeof s === 'number');
+    if (!seqs.length) break;
+    beforeSeq = Math.min(...seqs);
+  }
+  return conv;
 }
 
 function readBody(req) {
@@ -283,6 +1100,93 @@ function readBody(req) {
     });
     req.on('error', () => resolve({}));
   });
+}
+
+// 文件名搜索（q 已小写）：递归扫描工作区与任务目录的一级子目录（深度≤3，跳过 node_modules/.git，最多 20 条）
+// 归属名：工作区文件=data/workspaces 下第一级目录名；任务文件=按 dir 匹配的任务标题（无则'任务文件'）
+function searchFiles(q) {
+  const LIMIT = 20;
+  const results = [];
+  const collect = (dir, depth, wsName) => {
+    if (depth > 3 || results.length >= LIMIT) return;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const ent of entries) {
+      if (results.length >= LIMIT) return;
+      if (ent.name === 'node_modules' || ent.name === '.git') continue;
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        collect(full, depth + 1, wsName);
+      } else if (ent.isFile() && ent.name.toLowerCase().includes(q)) {
+        let size = 0;
+        try { size = fs.statSync(full).size; } catch (e) { /* 取大小失败按 0 计 */ }
+        results.push({ name: ent.name, wsName, size, path: full });
+      }
+    }
+  };
+  try {
+    for (const ent of fs.readdirSync(WS_DATA_DIR, { withFileTypes: true })) {
+      if (ent.isDirectory()) collect(path.join(WS_DATA_DIR, ent.name), 1, ent.name);
+    }
+  } catch (e) { /* 工作区目录缺失时跳过 */ }
+  const dirTitle = new Map(db.tasks.filter((t) => t.dir).map((t) => [normPath(t.dir), t.title || '任务文件']));
+  try {
+    for (const ent of fs.readdirSync(TASK_DATA_DIR, { withFileTypes: true })) {
+      if (!ent.isDirectory()) continue;
+      const full = path.join(TASK_DATA_DIR, ent.name);
+      collect(full, 1, dirTitle.get(normPath(full)) || '任务文件');
+    }
+  } catch (e) { /* 任务目录缺失时跳过 */ }
+  return results;
+}
+
+// 从 dsh 首页 HTML 提取 window.__DSH_BOOT__ 引导 JSON：定位标记后平衡花括号扫描（跳过字符串字面量与转义）
+function parseDshBoot(html) {
+  const marker = 'window.__DSH_BOOT__';
+  const idx = html.indexOf(marker);
+  if (idx < 0) return null;
+  const start = html.indexOf('{', idx + marker.length);
+  if (start < 0) return null;
+  let depth = 0;
+  let inStr = false;
+  let strCh = '';
+  for (let i = start; i < html.length; i++) {
+    const ch = html[i];
+    if (inStr) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === strCh) inStr = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inStr = true; strCh = ch; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        try { return JSON.parse(html.slice(start, i + 1)); } catch (e) { return null; }
+      }
+    }
+  }
+  return null;
+}
+
+// 目录会话（skill.list 需按会话项目根解析）：懒建 + 预分配固定 sessionId 实现重启幂等
+let catalogSessionId = null;
+async function getCatalogSession() {
+  if (catalogSessionId) return catalogSessionId;
+  const FIXED_ID = 'session-00000000-0000-4000-8000-0000000000c0';
+  try {
+    let v;
+    try {
+      v = await harnessRpc('session.create', { cwd: DATA_DIR, sessionId: FIXED_ID });
+    } catch (e) {
+      // 预分配 id 与既有会话冲突（cwd 不同）时退回普通创建
+      v = await harnessRpc('session.create', { cwd: DATA_DIR });
+    }
+    catalogSessionId = v.sessionId;
+    return catalogSessionId;
+  } catch (e) {
+    return null;
+  }
 }
 
 function parseUrl(url) {
@@ -304,143 +1208,627 @@ async function handleLocalApi(req, res, urlPath, params) {
     return sendJson(res, 200, { harnessUp, registered: [], removed: [] });
   }
 
+  // 工作区列表：直连 dsh workspace.list（过滤任务专属目录工作区）
   if (urlPath === '/api/workspaces' && req.method === 'GET') {
-    return sendJson(res, 200, { workspaces: db.workspaces });
+    try {
+      const v = await harnessRpc('workspace.list', {});
+      // 顺带填充工作区路径缓存（任务目录解析 taskDirFor 使用）
+      (v.items || []).forEach((w) => { if (w.workspaceId) workspaceCache.set(w.workspaceId, w.path); });
+      const workspaces = (v.items || []).filter((w) => !isTaskWorkspace(w.path)).map(mapWorkspace);
+      // 每个工作区的任务项目数（按 task.workspaceId 归属统计）与全部任务数，供侧栏「工作区任务数」展示
+      const taskCountByWs = {};
+      (db.tasks || []).forEach((t) => {
+        if (!t.workspaceId) return;
+        taskCountByWs[t.workspaceId] = (taskCountByWs[t.workspaceId] || 0) + 1;
+      });
+      const totalTaskCount = (db.tasks || []).length;
+      workspaces.forEach((w) => { w.taskCount = taskCountByWs[w.id] || 0; });
+      return sendJson(res, 200, { workspaces, totalTaskCount, harnessUp: true });
+    } catch (e) {
+      return sendJson(res, 200, { workspaces: [], totalTaskCount: (db.tasks || []).length, harnessUp: false });
+    }
   }
+  // 新建工作区：在数据目录下 mkdir 后注册为 dsh 工作区（workspace.create 幂等）
   if (urlPath === '/api/workspaces' && req.method === 'POST') {
     const body = await readBody(req);
-    const ws = { id: nextId('ws'), name: body.name || '未命名工作区' };
-    db.workspaces.push(ws);
-    return sendJson(res, 200, ws);
+    const name = String(body.name || '').trim();
+    if (!name) return sendJson(res, 400, { error: { message: '工作区名称不能为空' } });
+    const safe = name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || 'workspace';
+    const dir = path.join(WS_DATA_DIR, safe);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      const v = await harnessRpc('workspace.create', { path: dir });
+      return sendJson(res, 200, mapWorkspace(v.workspace));
+    } catch (e) {
+      return sendJson(res, 502, { error: { message: '创建工作区失败：' + e.message } });
+    }
   }
   if (urlPath.startsWith('/api/workspaces/') && urlPath.endsWith('/files') && req.method === 'GET') {
     return sendJson(res, 200, { files: [] });
   }
+  // 删除工作区：仅解除 dsh 注册（磁盘目录与文件保留，与 dsh 语义一致）
   if (urlPath.startsWith('/api/workspaces/') && req.method === 'DELETE') {
     const id = urlPath.split('/').pop();
-    db.workspaces = db.workspaces.filter((w) => w.id !== id);
-    db.tasks = db.tasks.filter((t) => t.workspaceId !== id);
-    return sendJson(res, 200, { success: true });
+    try {
+      await harnessRpc('workspace.delete', { workspaceId: id });
+      db.tasks = db.tasks.filter((t) => t.workspaceId !== id);
+      return sendJson(res, 200, { success: true });
+    } catch (e) {
+      return sendJson(res, 502, { error: { message: '删除工作区失败：' + e.message } });
+    }
   }
 
   if (urlPath === '/api/tasks' && req.method === 'GET') {
     const ws = params.ws;
+    // 惰性补齐旧任务目录：dir 为空/目录不存在的，解析并创建（优先工作区目录下）后写回
+    for (const t of db.tasks) {
+      const hadDir = !!(t.dir && fs.existsSync(t.dir));
+      await ensureTaskDir(t);
+      // dir 新补 / 目录刚重建（task.json 随之丢失）→ 补落盘持久化
+      if (!hadDir && t.dir) saveTaskFile(t);
+    }
     let tasks = db.tasks;
     if (ws && ws !== 'all') tasks = tasks.filter((t) => t.workspaceId === ws);
-    return sendJson(res, 200, { tasks });
+    // 附带工作区任务计数（供侧栏徽标实时刷新，无需单独请求）
+    const taskCountByWs = {};
+    (db.tasks || []).forEach((t) => {
+      if (!t.workspaceId) return;
+      taskCountByWs[t.workspaceId] = (taskCountByWs[t.workspaceId] || 0) + 1;
+    });
+    return sendJson(res, 200, { tasks, totalTaskCount: (db.tasks || []).length, taskCountByWs });
   }
   if (urlPath === '/api/tasks' && req.method === 'POST') {
     const body = await readBody(req);
+    const id = nextId('t');
+    // 任务专属目录：会话隔离的物理边界（ensureHarnessSession 以此注册 harness 工作区）；
+    // 绑定工作区时建在工作区目录下（<工作区path>/<taskId>），否则兜底 data/tasks/<id>
+    const taskDir = await taskDirFor(id, body.workspaceId || null);
+    try { fs.mkdirSync(taskDir, { recursive: true }); } catch (e) { /* 目录创建失败时任务仍可创建 */ }
     const task = {
-      id: nextId('t'),
+      id,
       title: body.title || '新任务',
       status: body.status || 'today',
-      workspaceId: body.workspaceId || (db.workspaces[0] && db.workspaces[0].id) || null,
+      workspaceId: body.workspaceId || null,
+      dir: taskDir,
       deadline: body.deadline || null,
       createdAt: new Date().toISOString(),
       completedAt: null
     };
     db.tasks.push(task);
+    saveTaskFile(task); // 创建即落盘（重启恢复任务与会话关联）
     return sendJson(res, 200, task);
   }
+  // 任务文件列表（真实）：递归扫描任务目录，仅列对话产生的文件
+  // （排除 AGENTS.md / MEMORY.md / task.json 系统档案与 .workbuddy/ 等 . 开头项）
+  if (urlPath.match(/^\/api\/tasks\/[^/]+\/files$/) && req.method === 'GET') {
+    const id = urlPath.split('/')[3];
+    const task = db.tasks.find((t) => t.id === id);
+    if (!task) return sendJson(res, 404, { error: { message: '任务不存在' } });
+    return sendJson(res, 200, { files: taskArtifactFiles(task) });
+  }
+  // 任务目录真实文件树：目录缺失 → {tree:null}；存在 → 递归扫描（限深 4，跳过 . 开头目录）
+  if (urlPath.match(/^\/api\/tasks\/[^/]+\/tree$/) && req.method === 'GET') {
+    const id = urlPath.split('/')[3];
+    const task = db.tasks.find((t) => t.id === id);
+    if (!task) return sendJson(res, 404, { error: { message: '任务不存在' } });
+    let isDir = false;
+    try { isDir = !!task.dir && fs.existsSync(task.dir) && fs.statSync(task.dir).isDirectory(); } catch (e) { isDir = false; }
+    if (!isDir) return sendJson(res, 200, { tree: null });
+    const scanned = scanTreeDir(task.dir, 1);
+    return sendJson(res, 200, {
+      dirName: path.basename(task.dir),
+      entries: scanned.entries,
+      stats: { fileCount: scanned.fileCount, size: scanned.size }
+    });
+  }
+  // 会话书架：读取当前任务挂载的 wiki 参考文档
+  if (urlPath.match(/^\/api\/tasks\/[^/]+\/docs$/) && req.method === 'GET') {
+    const id = urlPath.split('/')[3];
+    const task = db.tasks.find((t) => t.id === id);
+    if (!task) return sendJson(res, 404, { error: { message: '任务不存在' } });
+    return sendJson(res, 200, { shelfDocs: readShelf(task) || [] });
+  }
+  // 会话书架：挂载文档（relPath 定位，去重后写 shelf.json 并重组 AGENTS.md）
+  if (urlPath.match(/^\/api\/tasks\/[^/]+\/docs$/) && req.method === 'POST') {
+    const id = urlPath.split('/')[3];
+    const task = db.tasks.find((t) => t.id === id);
+    if (!task) return sendJson(res, 404, { error: { message: '任务不存在' } });
+    const body = await readBody(req);
+    const doc = listWikiDocs().find((d) => d.relPath === body.relPath);
+    if (!doc) return sendJson(res, 404, { error: { message: '文档不存在：' + (body.relPath || '') } });
+    await ensureTaskDir(task);
+    const shelf = readShelf(task) || [];
+    if (!shelf.some((d) => d.relPath === doc.relPath)) {
+      // 只存 文件名/所属分类/所属库名+路径（AGENTS.md 注入用）；库名按当前 wiki 模式判定
+      shelf.push({
+        relPath: doc.relPath,
+        title: doc.title,
+        category: doc.category || 'note',
+        library: getWikiMode() === 'llm-wiki' ? 'Wiki 知识库' : '本地文档库',
+        mtime: doc.mtime
+      });
+    }
+    writeShelfAndAgents(task, shelf);
+    return sendJson(res, 200, { success: true, shelfDocs: shelf });
+  }
+  // 会话书架：卸载文档（按 relPath 过滤移除并重组 AGENTS.md；前端传 relPath，兼容 path）
+  if (urlPath.match(/^\/api\/tasks\/[^/]+\/docs$/) && req.method === 'DELETE') {
+    const id = urlPath.split('/')[3];
+    const task = db.tasks.find((t) => t.id === id);
+    if (!task) return sendJson(res, 404, { error: { message: '任务不存在' } });
+    const rel = String(params.relPath || params.path || '');
+    const shelf = (readShelf(task) || []).filter((d) => d.relPath !== rel);
+    writeShelfAndAgents(task, shelf);
+    return sendJson(res, 200, { success: true, shelfDocs: shelf });
+  }
+  // 会话准备：补齐任务目录 + 应用智能体模板 + 落 AGENTS.md / MEMORY.md（dsh 会话以任务目录为 cwd）
+  if (urlPath.match(/^\/api\/tasks\/[^/]+\/prepare-session$/) && req.method === 'POST') {
+    const id = urlPath.split('/')[3];
+    const task = db.tasks.find((t) => t.id === id);
+    if (!task) return sendJson(res, 404, { error: { message: '任务不存在' } });
+    const body = await readBody(req);
+    await ensureTaskDir(task);
+    if (body.agentTemplate) {
+      task.agentTemplate = Object.assign({}, task.agentTemplate || {}, body.agentTemplate);
+    }
+    writeTaskAgentFiles(task);
+    saveTaskFile(task); // agentTemplate 可能被更新 → 持久化
+    return sendJson(res, 200, { task });
+  }
+  // 会话记忆回传：任务目录 MEMORY.md 覆盖回智能体内置记忆（长期沉淀到 data/agents/<tplId>/）
+  if (urlPath.match(/^\/api\/tasks\/[^/]+\/sync-memory$/) && req.method === 'POST') {
+    const id = urlPath.split('/')[3];
+    const task = db.tasks.find((t) => t.id === id);
+    const srcFile = task && task.dir ? path.join(task.dir, 'MEMORY.md') : null;
+    if (!srcFile || !fs.existsSync(srcFile)) return sendJson(res, 200, { success: false });
+    try {
+      const destFile = agentMemoryFile((task.agentTemplate && task.agentTemplate.id) || '_default');
+      fs.mkdirSync(path.dirname(destFile), { recursive: true });
+      fs.writeFileSync(destFile, fs.readFileSync(srcFile, 'utf8'), 'utf8');
+      return sendJson(res, 200, { success: true });
+    } catch (e) {
+      return sendJson(res, 200, { success: false });
+    }
+  }
+  // 任务更新（通用 PATCH：置于具体子路由之后匹配）
   if (urlPath.startsWith('/api/tasks/') && req.method === 'PATCH') {
     const id = urlPath.split('/')[3];
     const body = await readBody(req);
     const task = db.tasks.find((t) => t.id === id);
     if (task) {
+      if (body.action === 'ensureDir') await ensureTaskDir(task);
+      // 完成会话：complete 信号 → 置完成态并记录完成时间（空则记当前时间）；
+      // renew 续期不动 status（deadline 交给下方 Object.assign 落字段）
+      if (body.action === 'complete') {
+        task.status = 'completed';
+        if (!task.completedAt) task.completedAt = new Date().toISOString();
+      }
+      // 绑定会话：前端传 {action:'bindSession', snapshot, sessionId}。
+      // 前端读取的是 task.sessionSnapshot，需显式落该字段，避免 Object.assign 错落到 task.snapshot 导致
+      // 再次进入时快照丢失、会话被重复创建（历史丢失）。
+      if (body.action === 'bindSession') {
+        task.sessionSnapshot = body.snapshot;
+        if (body.sessionId) task.sessionId = body.sessionId;
+      }
+      // 续期：按新 deadline 重算 status（逾期 → 未逾期恢复为 today；已完成保持 completed）
+      if (body.action === 'renew') {
+        const dl = body.deadline ? new Date(body.deadline) : null;
+        task.deadline = body.deadline;
+        delete body.deadline; // 已显式落 deadline，避免 Object.assign 重复覆盖（值一致，仅防后续语义漂移）
+        if (task.status !== 'completed') {
+          task.status = (dl && dl.getTime() <= Date.now()) ? 'overdue' : 'today';
+          task.completedAt = null;
+        }
+      }
+      delete body.action; // 信号字段不落库
+      delete body.snapshot; // 已显式映射到 sessionSnapshot
       Object.assign(task, body);
       if (body.status === 'completed' && !task.completedAt) task.completedAt = new Date().toISOString();
       if (body.status && body.status !== 'completed') task.completedAt = null;
+      // 更换智能体身份后立即重组任务目录的 AGENTS.md（目录已就位时；书架随读随组）
+      if (body.agentTemplate && task.dir && fs.existsSync(task.dir)) writeTaskAgentFiles(task);
+      saveTaskFile(task); // 任何变更后持久化（含 bindSession / complete / agentTemplate / renew）
     }
     return sendJson(res, 200, task || {});
   }
+  // 删除任务（通用 DELETE：置于具体子路由之后匹配，避免误吞 /docs 等子路由的 DELETE）
   if (urlPath.startsWith('/api/tasks/') && req.method === 'DELETE') {
     const id = urlPath.split('/')[3];
+    const task = db.tasks.find((t) => t.id === id);
     db.tasks = db.tasks.filter((t) => t.id !== id);
-    return sendJson(res, 200, { success: true });
-  }
-  if (urlPath.match(/^\/api\/tasks\/[^/]+\/files$/) && req.method === 'GET') {
-    return sendJson(res, 200, { files: [] });
-  }
-  if (urlPath.match(/^\/api\/tasks\/[^/]+\/tree$/) && req.method === 'GET') {
-    return sendJson(res, 200, { tree: [] });
-  }
-  if (urlPath.match(/^\/api\/tasks\/[^/]+\/docs$/) && req.method === 'GET') {
-    return sendJson(res, 200, { docs: [] });
-  }
-  if (urlPath.match(/^\/api\/tasks\/[^/]+\/docs$/) && req.method === 'POST') {
+    // 删除任务时同步删除整个任务目录（task.json / AGENTS.md / 会话产物一并清理）；
+    // data/archive 中的归档目录独立保留，不受任务删除影响
+    if (task && task.dir) {
+      try { fs.rmSync(task.dir, { recursive: true, force: true }); } catch (e) { console.warn('[DSH Work Buddy] 删除任务目录失败：', e.message); }
+    }
     return sendJson(res, 200, { success: true });
   }
 
+  // 归档组列表（真实）：扫描 data/archive/<组>/ 下所有 */manifest.json 按组聚合；
+  // 组顺序：groups.json 定义的组在前（含无归档的空组），磁盘多出的组随后（id 加 disk_ 前缀供归档定位）
   if (urlPath === '/api/archive/groups' && req.method === 'GET') {
-    return sendJson(res, 200, { groups: db.archiveGroups });
+    const diskGroups = new Map(); // 磁盘组目录名 → 会话 manifest 数组
+    let level1 = [];
+    try { level1 = fs.readdirSync(ARCHIVE_DIR, { withFileTypes: true }); } catch (e) { /* 目录缺失 → 空列表 */ }
+    for (const gEnt of level1) {
+      if (!gEnt.isDirectory() || gEnt.name.startsWith('.')) continue;
+      const sessions = [];
+      let level2 = [];
+      try { level2 = fs.readdirSync(path.join(ARCHIVE_DIR, gEnt.name), { withFileTypes: true }); } catch (e) { /* 跳过该组 */ }
+      for (const sEnt of level2) {
+        if (!sEnt.isDirectory()) continue;
+        try {
+          const m = JSON.parse(fs.readFileSync(path.join(ARCHIVE_DIR, gEnt.name, sEnt.name, 'manifest.json'), 'utf8'));
+          if (m && m.taskId) sessions.push(m);
+        } catch (e) { /* 无 manifest / 损坏 → 跳过该会话目录 */ }
+      }
+      diskGroups.set(gEnt.name, sessions);
+    }
+    const groups = [];
+    const seen = new Set(); // 磁盘目录名去重（组名安全化后同名视为同组）
+    for (const g of db.archiveGroups) {
+      const dirName = safeName(g.name, '归档组');
+      if (seen.has(dirName)) continue;
+      seen.add(dirName);
+      groups.push({ id: g.id, name: g.name, sessions: diskGroups.get(dirName) || [] });
+    }
+    for (const [dirName, sessions] of diskGroups) {
+      if (seen.has(dirName)) continue;
+      seen.add(dirName);
+      groups.push({ id: 'disk_' + dirName, name: dirName, sessions });
+    }
+    return sendJson(res, 200, { groups });
   }
+  // 新建归档组：内存追加 + groups.json 落盘（含无归档的空组）
   if (urlPath === '/api/archive/groups' && req.method === 'POST') {
     const body = await readBody(req);
     const group = { id: nextId('ag'), name: body.name || '归档组' };
     db.archiveGroups.push(group);
+    saveArchiveGroups();
     return sendJson(res, 200, group);
+  }
+  // 归档会话：复制任务产物到 data/archive/<组>/<任务>/ 并写 manifest.json
+  if (urlPath === '/api/archive/sessions' && req.method === 'POST') {
+    const body = await readBody(req);
+    const task = db.tasks.find((t) => t.id === body.taskId);
+    if (!task) return sendJson(res, 404, { error: { message: '任务不存在' } });
+    // 组定位：groupId 对应 db.archiveGroups 的 name；磁盘组（disk_ 前缀）解析目录名兜底
+    const group = db.archiveGroups.find((g) => g.id === body.groupId);
+    let groupName = group && group.name;
+    if (!groupName && typeof body.groupId === 'string' && body.groupId.startsWith('disk_')) groupName = body.groupId.slice(5);
+    if (!groupName) groupName = '默认组';
+    // 归档目录：data/archive/<组名安全化>/<任务标题安全化 + '_' + 任务 id 后 6 位>/
+    const archiveDir = path.join(
+      ARCHIVE_DIR,
+      safeName(groupName, '归档组'),
+      safeName(task.title || '未命名任务', '未命名任务') + '_' + String(task.id).slice(-6)
+    );
+    // 待复制清单：'all' → 任务产物全部；数组 → 逐个校验 sourcePath（resolve 后必须仍在 task.dir 内，防穿越）；[] → 仅归档元数据
+    const toCopy = [];
+    if (body.files === 'all') {
+      toCopy.push(...taskArtifactFiles(task));
+    } else if (Array.isArray(body.files)) {
+      const dirNorm = normPath(task.dir);
+      for (const f of body.files) {
+        const src = path.resolve(String((f && f.sourcePath) || ''));
+        if (!dirNorm || !normPath(src).startsWith(dirNorm + '/')) continue; // 越界路径直接跳过
+        // 归档内相对名由服务端按 task.dir 计算（不信任前端 name，杜绝 ../ 注入）
+        const rel = path.relative(task.dir, src).split(path.sep).join('/');
+        toCopy.push({ name: rel, sourcePath: src });
+      }
+    }
+    // 复制文件（保留子目录结构）；单个失败继续其余
+    const copiedFiles = [];
+    try {
+      fs.mkdirSync(archiveDir, { recursive: true });
+      for (const f of toCopy) {
+        const dest = path.join(archiveDir, f.name);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(f.sourcePath, dest);
+        let size = 0;
+        try { size = fs.statSync(dest).size; } catch (e) { /* 取大小失败按 0 计 */ }
+        copiedFiles.push({ name: f.name, size });
+      }
+    } catch (e) {
+      return sendJson(res, 500, { error: { message: '归档失败：' + e.message } });
+    }
+    // 会话统计与对话记录（有 sessionId 时尽力而为，失败不阻塞归档）
+    let messages = 0;
+    let tokens = 0;
+    let conversation = [];
+    if (task.sessionId) {
+      try {
+        const st = await archiveSessionStats(task.sessionId);
+        messages = st.messages;
+        tokens = st.tokens;
+      } catch (e) { /* 统计失败按 0 处理 */ }
+      try {
+        conversation = await fetchSessionConversation(task.sessionId);
+      } catch (e) { /* 对话拉取失败保持空（详情页可实时回源） */ }
+    }
+    // 智能体简介：模板名 + 角色设定前 60 字；无模板时兜底默认文案
+    const tpl = task.agentTemplate;
+    const agentIntro = tpl && tpl.name
+      ? tpl.name + ' · ' + String(tpl.prompt || '').slice(0, 60)
+      : 'DeepSeek 智能体 · dsh 运行时';
+    const now = new Date().toISOString();
+    const manifest = {
+      taskId: task.id,
+      title: task.title,
+      label: task.label || null,
+      startedAt: task.createdAt,
+      endedAt: task.completedAt || now,
+      agentIntro,
+      messages,
+      tokens,
+      sizeBytes: copiedFiles.reduce((s, f) => s + (f.size || 0), 0),
+      fileCount: copiedFiles.length,
+      archivedAt: now,
+      sessionId: task.sessionId || null,
+      files: copiedFiles, // 复制后的清单 [{name,size}]
+      conversation // 对话记录 [{role,text,time}]（归档详情「对话记录」数据源）
+    };
+    try {
+      fs.writeFileSync(path.join(archiveDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+    } catch (e) {
+      return sendJson(res, 500, { error: { message: '写归档清单失败：' + e.message } });
+    }
+    task.archived = true;
+    saveTaskFile(task); // 归档标记持久化
+    return sendJson(res, 200, { success: true, archived: copiedFiles.length });
   }
   if (urlPath === '/api/archive/sessions' && req.method === 'GET') {
     return sendJson(res, 200, { sessions: [] });
   }
+  // 归档详情：group+taskId 定位 manifest → 返回元数据与文件清单（文件内容不返回，前端只展示清单）
+// 归档文件按扩展名归类（前端归档详情「文件分类」区数据源：{name, count, files:[{name,ext,sizeBytes,path}]}）
+function archiveFileCategories(files) {
+  const groups = new Map();
+  for (const f of files || []) {
+    const name = String((f && f.name) || '');
+    if (!name) continue;
+    const ext = path.extname(name).slice(1).toUpperCase() || '其他';
+    if (!groups.has(ext)) groups.set(ext, { name: ext, files: [] });
+    groups.get(ext).files.push({ name, ext, sizeBytes: (f.size != null ? f.size : 0), path: name });
+  }
+  return [...groups.values()].sort((a, b) => b.files.length - a.files.length)
+    .map((g) => ({ name: g.name, count: g.files.length, files: g.files }));
+}
+
+// 定位归档会话目录（group + taskId → 会话目录绝对路径；未找到返回 null）
+function findArchiveSessionDir(groupName, taskId) {
+  const groupDir = path.join(ARCHIVE_DIR, safeName(groupName, '归档组'));
+  try {
+    for (const ent of fs.readdirSync(groupDir, { withFileTypes: true })) {
+      if (!ent.isDirectory()) continue;
+      let m = null;
+      try { m = JSON.parse(fs.readFileSync(path.join(groupDir, ent.name, 'manifest.json'), 'utf8')); } catch (e) { continue; }
+      if (m && m.taskId === taskId) return { sessionDir: path.join(groupDir, ent.name), manifest: m };
+    }
+  } catch (e) { /* 组目录缺失 */ }
+  return null;
+}
+
   if (urlPath === '/api/archive/detail' && req.method === 'GET') {
-    return sendJson(res, 200, { detail: null });
+    const groupName = String(params.group || '');
+    const taskId = String(params.taskId || '');
+    if (!groupName || !taskId) return sendJson(res, 400, { error: { message: '缺少 group / taskId 参数' } });
+    const found = findArchiveSessionDir(groupName, taskId);
+    if (!found) return sendJson(res, 404, { error: { message: '归档不存在' } });
+    const manifest = found.manifest;
+    const sessionDir = found.sessionDir;
+    // 对话记录：优先用归档时保存的 manifest.conversation；旧归档无该字段时，
+    // 若 harness 会话仍存在则实时回源一次并回写 manifest（尽力而为，失败返回空）
+    let conversation = Array.isArray(manifest.conversation) ? manifest.conversation : [];
+    if (!conversation.length && manifest.sessionId) {
+      try {
+        conversation = await fetchSessionConversation(manifest.sessionId);
+        if (conversation.length) {
+          manifest.conversation = conversation;
+          try { fs.writeFileSync(path.join(sessionDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8'); } catch (e) { /* 回写失败忽略 */ }
+        }
+      } catch (e) { /* 回源失败保持空 */ }
+    }
+    const files = (manifest.files || []).map((f) => ({ name: f.name, size: f.size, path: f.name }));
+    return sendJson(res, 200, {
+      group: groupName,
+      taskId: manifest.taskId,
+      title: manifest.title,
+      label: manifest.label || null,
+      startedAt: manifest.startedAt,
+      endedAt: manifest.endedAt,
+      archivedAt: manifest.archivedAt,
+      agentIntro: manifest.agentIntro,
+      tokens: manifest.tokens,
+      messages: manifest.messages,
+      sizeBytes: manifest.sizeBytes,
+      sessionId: manifest.sessionId || null,
+      files,
+      categories: archiveFileCategories(manifest.files), // 前端「文件分类」区数据源（按扩展名分组）
+      conversation
+    });
+  }
+  // 归档文件内容：group + taskId + name（相对会话目录，防目录穿越）定位并返回（inline 预览 / download 下载）
+  if (urlPath === '/api/archive/file' && req.method === 'GET') {
+    const groupName = String(params.group || '');
+    const taskId = String(params.taskId || '');
+    const name = String(params.name || '');
+    if (!groupName || !taskId || !name) return sendJson(res, 400, { error: { message: '缺少 group / taskId / name 参数' } });
+    const found = findArchiveSessionDir(groupName, taskId);
+    if (!found) return sendJson(res, 404, { error: { message: '归档不存在' } });
+    const full = path.resolve(found.sessionDir, name);
+    if (full !== found.sessionDir && !full.startsWith(found.sessionDir + path.sep)) {
+      return sendJson(res, 403, { error: { message: '非法文件路径' } });
+    }
+    try {
+      const st = fs.statSync(full);
+      if (!st.isFile()) return sendJson(res, 404, { error: { message: '文件不存在' } });
+      const ext = path.extname(full).toLowerCase();
+      const ct = mime[ext] || 'application/octet-stream';
+      const base = path.basename(full);
+      if (String(params.download) === '1') {
+        res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(base)}` });
+      } else {
+        res.writeHead(200, { 'content-type': ct, 'content-disposition': `inline; filename*=UTF-8''${encodeURIComponent(base)}` });
+      }
+      fs.createReadStream(full).pipe(res);
+    } catch (e) {
+      return sendJson(res, 404, { error: { message: '文件不存在' } });
+    }
   }
 
-  if (urlPath === '/api/wiki/docs' && req.method === 'GET') {
-    return sendJson(res, 200, { docs: db.wikiDocs });
+  // ---------- Wiki 轻量文档库端点（mode 路由置于块首，均为精确匹配不会被前缀路由截获） ----------
+  if (urlPath === '/api/wiki/mode' && req.method === 'GET') {
+    return sendJson(res, 200, { mode: getWikiMode() });
   }
-  if (urlPath === '/api/wiki/search' && req.method === 'GET') {
-    return sendJson(res, 200, { results: [] });
+  if (urlPath === '/api/wiki/mode' && req.method === 'POST') {
+    const body = await readBody(req);
+    if (body.mode !== 'lite' && body.mode !== 'llm-wiki') {
+      return sendJson(res, 400, { error: { message: 'mode 仅支持 lite / llm-wiki' } });
+    }
+    try {
+      setWikiMode(body.mode);
+      return sendJson(res, 200, { mode: body.mode });
+    } catch (e) {
+      return sendJson(res, 500, { error: { message: '写入 wiki 模式失败：' + e.message } });
+    }
+  }
+  if (urlPath === '/api/wiki/docs' && req.method === 'GET') {
+    return sendJson(res, 200, { docs: listWikiDocs() });
   }
   if (urlPath === '/api/wiki/doc' && req.method === 'GET') {
-    return sendJson(res, 200, { doc: null });
+    const full = resolveWikiFile(params.path);
+    if (!full) return sendJson(res, 403, { error: { message: '非法文档路径' } });
+    try {
+      return sendJson(res, 200, { content: fs.readFileSync(full, 'utf8') });
+    } catch (e) {
+      return sendJson(res, 404, { error: { message: '文档不存在' } });
+    }
   }
   if (urlPath === '/api/wiki/doc' && req.method === 'POST') {
     const body = await readBody(req);
-    const doc = { path: body.path || 'doc.md', content: body.content || '' };
-    db.wikiDocs.push(doc);
-    return sendJson(res, 200, doc);
+    const title = String(body.title || '').trim();
+    const description = String(body.description || '').trim();
+    const tags = (Array.isArray(body.tags) ? body.tags : []).map((t) => String(t).trim()).filter(Boolean);
+    if (!title) return sendJson(res, 400, { error: { message: 'title（名称）不能为空' } });
+    if (!description) return sendJson(res, 400, { error: { message: 'description（简介）不能为空' } });
+    if (tags.length < 3) return sendJson(res, 400, { error: { message: 'tags（标签）至少 3 个' } });
+    const safe = title.replace(/[\\/:*?"<>|\r\n\t]/g, '').trim().slice(0, 80) || 'untitled';
+    try {
+      const content = serializeWikiDoc({ title, description, tags }, body.content || '');
+      if (getWikiMode() === 'llm-wiki') {
+        // llm-wiki 模式：写入 sources/ 并确保 SCHEMA.md / index.md 骨架（存在则不覆盖）
+        const srcDir = path.join(WIKI_LLM_DIR, 'sources');
+        fs.mkdirSync(srcDir, { recursive: true });
+        fs.writeFileSync(path.join(srcDir, safe + '.md'), content, 'utf8');
+        const schemaFile = path.join(WIKI_LLM_DIR, 'SCHEMA.md');
+        if (!fs.existsSync(schemaFile)) fs.writeFileSync(schemaFile, LLM_WIKI_SCHEMA_MD, 'utf8');
+        const indexFile = path.join(WIKI_LLM_DIR, 'index.md');
+        if (!fs.existsSync(indexFile)) fs.writeFileSync(indexFile, LLM_WIKI_INDEX_MD, 'utf8');
+        return sendJson(res, 200, { relPath: 'sources/' + safe + '.md', title });
+      }
+      // lite 模式：写入轻量文档库根目录
+      fs.mkdirSync(WIKI_STORE_DIR, { recursive: true });
+      fs.writeFileSync(path.join(WIKI_STORE_DIR, safe + '.md'), content, 'utf8');
+      return sendJson(res, 200, { relPath: safe + '.md', title });
+    } catch (e) {
+      return sendJson(res, 500, { error: { message: '保存文档失败：' + e.message } });
+    }
   }
   if (urlPath === '/api/wiki/doc' && req.method === 'DELETE') {
-    return sendJson(res, 200, { success: true });
+    const full = resolveWikiFile(params.path);
+    if (!full) return sendJson(res, 403, { error: { message: '非法文档路径' } });
+    try {
+      fs.unlinkSync(full);
+      return sendJson(res, 200, { success: true });
+    } catch (e) {
+      return sendJson(res, 404, { error: { message: '文档不存在' } });
+    }
   }
   if (urlPath === '/api/wiki/repos' && req.method === 'GET') {
-    return sendJson(res, 200, { repos: [] });
+    return sendJson(res, 200, { repos: [{ category: 'note', slug: 'default', name: '本地文档库', mode: getWikiMode() }] });
   }
+  if (urlPath === '/api/wiki/search' && req.method === 'GET') {
+    const q = String(params.q || '').trim().toLowerCase();
+    if (!q) return sendJson(res, 200, { results: [] });
+    // 全字段匹配（title/tags/description/正文，读文件内容），上限 20
+    const results = [];
+    for (const d of listWikiDocs(true)) {
+      if (results.length >= 20) break;
+      const hay = `${d.title}\n${d.description}\n${(d.tags || []).join(' ')}\n${d.body || ''}`.toLowerCase();
+      if (hay.includes(q)) results.push({ relPath: d.relPath, title: d.title, description: d.description, tags: d.tags });
+    }
+    return sendJson(res, 200, { results });
+  }
+  // ---------- Wiki 知识图谱（真实提取：文档 + 章节节点，contains/part_of 层级 + 跨文档 mentions） ----------
+  // 图数据按 (category, repo) 缓存于内存；GET 无缓存时懒构建（文档行关联标记直接依赖 GET，无需先 POST）
   if (urlPath === '/api/wiki/graph' && req.method === 'POST') {
-    return sendJson(res, 200, { success: true });
+    const body = await readBody(req);
+    const cat = String(body.category || 'note');
+    const repo = String(body.repo || 'default');
+    const g = wikiGraphData(cat, repo, true); // 强制重建
+    return sendJson(res, 200, { success: true, nodes: g.nodes.length, edges: g.edges.length });
+  }
+  if (urlPath === '/api/wiki/graph-data' && req.method === 'GET') {
+    const cat = String(params.category || 'note');
+    const repo = String(params.repo || 'default');
+    const g = wikiGraphData(cat, repo);
+    return sendJson(res, 200, { nodes: g.nodes, edges: g.edges });
   }
   if (urlPath === '/api/wiki/graph-query' && req.method === 'POST') {
-    return sendJson(res, 200, { results: [] });
+    const body = await readBody(req);
+    const cat = String(body.category || 'note');
+    const repo = String(body.repo || 'default');
+    const nodeId = String(body.node || '');
+    const g = wikiGraphData(cat, repo);
+    const out = g.edges.filter((e) => e.subject === nodeId);
+    const inE = g.edges.filter((e) => e.object === nodeId);
+    return sendJson(res, 200, { neighbors: [{ out, in: inE }] });
   }
   if (urlPath === '/api/wiki/inject-agent-docs' && req.method === 'POST') {
     return sendJson(res, 200, { success: true });
   }
 
-  // 插件 Tab：对接 dsh 智能体预设（agentPreset.list），作为智能体自带插件展示
+  // 插件 Tab：从 dsh 首页引导数据（window.__DSH_BOOT__.entries）提取浏览器插件清单
   if (urlPath === '/api/resources/plugins' && req.method === 'GET') {
+    let plugins = null;
     try {
-      const v = await harnessRpc('agentPreset.list', {});
-      const plugins = (v.presets || []).map((p) => ({
-        id: p.id,
-        name: p.name,
-        description: p.description || '',
-        enabled: true,
-        preset: p.id,
-        isDefault: !!p.isDefault
-      }));
-      return sendJson(res, 200, { plugins, source: 'harness' });
-    } catch (e) {
-      return sendJson(res, 200, { plugins: [], source: 'unavailable' });
-    }
+      const html = await fetch(`http://${HARNESS_HOST}:${HARNESS_PORT}/`, { signal: AbortSignal.timeout(3000) }).then((r) => r.text());
+      const boot = parseDshBoot(html);
+      if (boot && Array.isArray(boot.entries)) {
+        plugins = boot.entries
+          .filter((e) => e && e.id)
+          .map((e) => ({
+            id: e.id,
+            name: e.id.replace(/^@deepseek-ai\/dsh-/, ''),
+            description: 'dsh 智能体运行时插件',
+            source: 'harness'
+          }));
+      }
+    } catch (e) { /* fetch 异常走 unavailable 兜底 */ }
+    if (!plugins) return sendJson(res, 200, { plugins: [], source: 'unavailable' });
+    return sendJson(res, 200, { plugins, source: 'harness' });
   }
   if (urlPath === '/api/resources/plugins/toggle' && req.method === 'POST') {
     return sendJson(res, 200, { success: true });
   }
+  // 技能 Tab：对接 dsh skill.list（按目录会话的项目根解析，懒建 + 固定 sessionId 幂等）
   if (urlPath === '/api/resources/skills' && req.method === 'GET') {
-    return sendJson(res, 200, { skills: db.skills });
+    try {
+      const sessionId = await getCatalogSession();
+      if (!sessionId) return sendJson(res, 200, { skills: [], source: 'unavailable' });
+      const v = await harnessRpc('skill.list', { sessionId });
+      const skills = (v.skills || []).map((s) => ({
+        id: s.name,
+        name: s.name,
+        description: s.description || '',
+        whenToUse: s.whenToUse || '',
+        modelInvocable: s.modelInvocable !== false
+      }));
+      return sendJson(res, 200, { skills, source: 'harness' });
+    } catch (e) {
+      return sendJson(res, 200, { skills: [], source: 'unavailable' });
+    }
   }
   if (urlPath === '/api/resources/skills/toggle' && req.method === 'POST') {
     return sendJson(res, 200, { success: true });
@@ -473,19 +1861,62 @@ async function handleLocalApi(req, res, urlPath, params) {
     db.agentTemplates = db.agentTemplates.filter((t) => t.id !== id);
     return sendJson(res, 200, { success: true });
   }
+  // 智能体模板内置记忆（智能体管理页记忆编辑）：读取（懒建）/编辑/重置 data/agents/<id>/MEMORY.md
+  if (urlPath.match(/^\/api\/resources\/agent-templates\/[^/]+\/memory$/) && req.method === 'GET') {
+    const id = urlPath.split('/')[4];
+    return sendJson(res, 200, { content: getAgentMemory(id) });
+  }
+  if (urlPath.match(/^\/api\/resources\/agent-templates\/[^/]+\/memory$/) && req.method === 'PUT') {
+    const id = urlPath.split('/')[4];
+    const body = await readBody(req);
+    try {
+      const file = agentMemoryFile(id);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, body.content || '', 'utf8');
+      return sendJson(res, 200, { success: true });
+    } catch (e) {
+      return sendJson(res, 500, { success: false, error: { message: '写入智能体记忆失败：' + e.message } });
+    }
+  }
+  if (urlPath.match(/^\/api\/resources\/agent-templates\/[^/]+\/memory\/reset$/) && req.method === 'POST') {
+    const id = urlPath.split('/')[4];
+    try {
+      const file = agentMemoryFile(id);
+      const content = memoryTemplate(new Date().toISOString());
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, content, 'utf8');
+      return sendJson(res, 200, { content });
+    } catch (e) {
+      return sendJson(res, 500, { error: { message: '重置智能体记忆失败：' + e.message } });
+    }
+  }
 
   if (urlPath === '/api/schedule' && req.method === 'GET') {
     return sendJson(res, 200, { events: [] });
   }
+  // 顶部全局搜索：任务（标题/label.text）/ 文档（path/content）/ 文件（文件名）三分区，q 不区分大小写
   if (urlPath === '/api/search' && req.method === 'GET') {
-    return sendJson(res, 200, { results: [] });
+    const q = String(params.q || '').trim().toLowerCase();
+    if (!q) return sendJson(res, 200, { tasks: [], docs: [], files: [] });
+    const tasks = db.tasks
+      .filter((t) => (t.title || '').toLowerCase().includes(q) || ((t.label && t.label.text) || '').toLowerCase().includes(q))
+      .map((t) => ({ id: t.id, title: t.title, status: t.status, workspaceId: t.workspaceId }));
+    // 文档分区：轻量文档库全字段匹配（title/description/tags/正文），上限 20
+    const docs = [];
+    for (const d of listWikiDocs(true)) {
+      if (docs.length >= 20) break;
+      const hay = `${d.title}\n${d.description}\n${(d.tags || []).join(' ')}\n${d.body || ''}`.toLowerCase();
+      if (hay.includes(q)) docs.push({ relPath: d.relPath, title: d.title, category: 'note', description: d.description });
+    }
+    return sendJson(res, 200, { tasks, docs, files: searchFiles(q) });
   }
   if (urlPath === '/api/plugin-community' && req.method === 'GET') {
-    return sendJson(res, 200, { items: db.pluginCommunity });
+    // 前端契约：{ presets: 预置精选（不可删）, user: 用户自建收藏（可删） }
+    return sendJson(res, 200, { presets: PLUGIN_COMMUNITY_SEED, user: db.pluginCommunity });
   }
   if (urlPath === '/api/plugin-community' && req.method === 'POST') {
     const body = await readBody(req);
-    const item = { id: nextId('pc'), ...body };
+    const item = { id: nextId('pc'), user: true, ...body };
     db.pluginCommunity.push(item);
     return sendJson(res, 200, item);
   }
@@ -513,6 +1944,11 @@ const server = http.createServer(async (req, res) => {
     if (handled !== null) return;
   }
 
+  // Wiki 文档库（llm-wiki 构建产物静态托管；须在智能体代理前拦截，否则会被转发到 dsh SPA）
+  if (urlPath === '/llm-wiki-plugin' || urlPath.startsWith('/llm-wiki-plugin/')) {
+    return serveWiki(urlPath, res, req);
+  }
+
   // 转发到 dsh 智能体
   if (shouldProxy(req.url)) {
     return proxyHttp(req, res, resolveProxyPath(req.url));
@@ -528,8 +1964,48 @@ server.on('upgrade', (req, socket, head) => {
   proxyUpgrade(req, socket, head);
 });
 
+// ---------- 优雅关闭注册（信号/exit 兜底/异常日志/端口占用） ----------
+// 关闭项目时组件同关：SIGINT/SIGTERM → shutdown() → 网关关闭 + 智能体子进程一并退出（不留孤儿）
+process.on('SIGINT', () => shutdown('收到退出信号（SIGINT / Ctrl+C）', 0));
+process.on('SIGTERM', () => shutdown('收到退出信号（SIGTERM）', 0));
+// exit 钩子仅能同步：兜底保证智能体子进程不残留（正常退出与异常退出都覆盖）
+process.on('exit', () => {
+  if (harnessProcess && harnessProcess.exitCode === null && !harnessProcess.killed) {
+    try { harnessProcess.kill(); } catch (e) { /* 已退出则忽略 */ }
+  }
+});
+// 异常日志（不改变默认退出行为，仅防静默吞错、便于排查）
+process.on('uncaughtException', (e) => console.error('[DSH Work Buddy] uncaughtException:', (e && e.stack) || e));
+process.on('unhandledRejection', (e) => console.error('[DSH Work Buddy] unhandledRejection:', (e && e.stack) || e));
+// 端口占用等 listen 错误：友好提示 + 退出（listen 失败时 ensureHarness 不会执行，无子进程需清理）
+server.on('error', (e) => {
+  if (e && e.code === 'EADDRINUSE') {
+    console.error(`[DSH Work Buddy] 端口 ${PORT} 已被占用，请先关闭旧实例再启动（当前实例未启动成功）。`);
+  } else {
+    console.error('[DSH Work Buddy] HTTP 服务启动失败：', e && e.message);
+  }
+  shutdown('HTTP 服务启动失败', 1);
+});
+// 测试/运维钩子：文件信号触发优雅关闭。
+// 不用 stdin 监听：stdin 的 'data' 监听会让其进入流动模式，与继承同一 stdin 的智能体子进程
+// 产生读取竞争，导致 harness 启动卡死。DSH_WB_SHUTDOWN_FILE=<path>：文件出现即优雅关闭并消费信号。
+const wbShutdownFile = process.env.DSH_WB_SHUTDOWN_FILE;
+if (wbShutdownFile) {
+  const wbShutdownTimer = setInterval(() => {
+    try {
+      if (fs.existsSync(wbShutdownFile)) {
+        fs.unlinkSync(wbShutdownFile); // 消费信号
+        shutdown('外部关闭信号（shutdown 文件）', 0);
+      }
+    } catch (e) { /* 忽略瞬时错误 */ }
+  }, 500);
+  wbShutdownTimer.unref();
+}
+
 // ---------- 启动 ----------
 server.listen(PORT, HOST, () => {
   console.log(`DSH Work Buddy server running at http://${HOST}:${PORT}`);
-  ensureHarness();
+  ensureHarness(); // 智能体组件：探测 → 未运行则自动拉起（127.0.0.1:3080）
+  ensureWiki();    // Wiki 文档库：构建产物就位检查（/llm-wiki-plugin/）
+  ensureSkills();  // dsh 技能：llm-wiki 项目技能安装到 .dsh/skills/（幂等）
 });

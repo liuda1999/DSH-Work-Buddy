@@ -1086,6 +1086,11 @@ svg{display:block}
 }
 .workspace-item.active .ws-dot{box-shadow:0 0 8px rgba(34,197,94,0.55)}
 .workspace-item .ws-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* dsh 同步工作区：名称 + 会话数徽标 + path 小字（两行布局） */
+.workspace-item .ws-meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.workspace-item .ws-name-row{display:flex;align-items:center;gap:6px;min-width:0}
+.workspace-item .ws-count{flex-shrink:0;font-size:9.5px;color:var(--text-4);background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:999px;padding:0 6px;line-height:15px}
+.workspace-item .ws-path{font-size:10px;color:var(--text-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:'JetBrains Mono',monospace;opacity:.85}
 /* 单个工作区删除（悬停显示 ✕）：删除入口仅「我的工作区」持有，智能体会话内不提供 */
 .workspace-item .ws-del{
   width:20px;height:20px;flex-shrink:0;display:none;place-items:center;border-radius:6px;
@@ -1317,9 +1322,191 @@ select.form-input option{background:#12161F;color:var(--text-2)}
   transition:background .2s, color .2s, transform .2s;
 }
 .session-close:hover{background:rgba(239,68,68,0.15);color:#FCA5A5;transform:rotate(90deg)}
-/* 主体：iframe 撑满剩余空间 */
+/* 主体：自研对话组件撑满剩余空间 */
 .session-body{position:relative;flex:1;min-height:0;background:var(--bg-0)}
-#sessionFrame{width:100%;height:100%;border:0;display:block;background:#0E1117}
+
+/* ============ 自研对话组件（中栏直连 dsh harness） ============ */
+.ss-chat{display:flex;flex-direction:column;height:100%;min-height:0;background:#0B0E13}
+.ss-chat-scroll{flex:1;min-height:0;overflow-y:auto;scroll-behavior:smooth}
+.ss-chat-scroll::-webkit-scrollbar{width:8px}
+.ss-chat-scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.08);border-radius:4px}
+.ss-chat-list{max-width:860px;margin:0 auto;padding:20px 22px 12px;display:flex;flex-direction:column;gap:14px}
+/* 消息通用 */
+.ss-msg{display:flex;flex-direction:column;gap:6px;min-width:0}
+.ss-msg .ss-role{font-size:10.5px;font-weight:600;letter-spacing:1px;color:var(--text-4);display:flex;align-items:center;gap:6px}
+.ss-msg .ss-role .ss-model{font-weight:400;letter-spacing:0.2px;color:var(--text-5);font-family:'JetBrains Mono',monospace}
+.ss-bubble{border-radius:14px;padding:11px 14px;font-size:13.5px;line-height:1.75;min-width:0;max-width:100%;overflow-wrap:break-word}
+.ss-msg.user{align-items:flex-end}
+.ss-msg.user .ss-bubble{
+  background:linear-gradient(180deg,rgba(34,197,94,0.16),rgba(34,197,94,0.10));
+  border:1px solid rgba(34,197,94,0.30);
+  color:var(--text-1);white-space:pre-wrap;border-bottom-right-radius:4px;max-width:86%;
+}
+.ss-msg.asst .ss-bubble{
+  background:rgba(255,255,255,0.035);border:1px solid var(--border);
+  color:var(--text-1);border-bottom-left-radius:4px;
+}
+/* 气泡内 markdown */
+.ss-md p{margin:0 0 8px}
+.ss-md p:last-child{margin-bottom:0}
+.ss-md h1,.ss-md h2,.ss-md h3{margin:10px 0 6px;font-size:1.06em;color:var(--text-1)}
+.ss-md ul,.ss-md ol{margin:4px 0 8px;padding-left:20px}
+.ss-md li{margin:2px 0}
+.ss-md code{font-family:'JetBrains Mono',monospace;font-size:0.88em;background:rgba(255,255,255,0.07);padding:1px 5px;border-radius:5px;color:#A7F3D0}
+.ss-md pre{background:#0A0D12;border:1px solid var(--border);border-radius:10px;padding:10px 12px;overflow-x:auto;margin:6px 0}
+.ss-md pre code{background:none;padding:0;color:#D1FAE5;font-size:12px;line-height:1.6}
+.ss-md a{color:#6EE7B7;text-decoration:underline}
+.ss-md blockquote{border-left:3px solid rgba(34,197,94,0.5);padding-left:10px;margin:6px 0;color:var(--text-3)}
+/* 思考过程（可折叠） */
+.ss-reason{border:1px dashed rgba(167,139,250,0.35);background:rgba(167,139,250,0.06);border-radius:10px;padding:8px 12px;font-size:12px;color:var(--text-3)}
+.ss-reason summary{cursor:pointer;color:#C4B5FD;font-size:11.5px;letter-spacing:0.5px;user-select:none}
+.ss-reason .ss-reason-body{white-space:pre-wrap;margin-top:6px;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.7}
+/* 工具调用 / 工具结果卡片 */
+.ss-tool{border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,0.025);overflow:hidden}
+.ss-tool summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;padding:8px 12px;font-size:12px;color:var(--text-2);user-select:none}
+.ss-tool summary::-webkit-details-marker{display:none}
+.ss-tool summary:hover{background:rgba(255,255,255,0.035)}
+.ss-tool .ss-tool-name{font-family:'JetBrains Mono',monospace;color:#93C5FD;font-weight:600}
+.ss-tool .ss-tool-arg{color:var(--text-4);font-family:'JetBrains Mono',monospace;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.ss-tool .ss-tool-state{font-size:10px;padding:1px 8px;border-radius:999px;flex-shrink:0}
+.ss-tool .ss-tool-state.ok{color:#86EFAC;background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.3)}
+.ss-tool .ss-tool-state.err{color:#FCA5A5;background:rgba(248,113,113,0.12);border:1px solid rgba(248,113,113,0.3)}
+.ss-tool .ss-tool-state.run{color:#93C5FD;background:rgba(59,130,246,0.10);border:1px solid rgba(59,130,246,0.35)}
+.ss-msg.pending{opacity:.55}
+.ss-tool .ss-tool-body{border-top:1px solid var(--border);padding:10px 12px;font-size:12px}
+.ss-tool .ss-tool-body pre{margin:0;white-space:pre-wrap;word-break:break-word;font-family:'JetBrains Mono',monospace;font-size:11.5px;line-height:1.65;color:var(--text-2);max-height:340px;overflow-y:auto}
+.ss-tool.is-err{border-color:rgba(248,113,113,0.35)}
+/* 系统提示 / 命令卡片 / 错误 */
+.ss-note{display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text-3);border:1px dashed var(--border);border-radius:10px;padding:8px 12px;background:rgba(255,255,255,0.02)}
+.ss-note .ss-note-ico{flex-shrink:0;margin-top:1px}
+.ss-note.err{color:#FCA5A5;border-color:rgba(248,113,113,0.35);background:rgba(248,113,113,0.05)}
+/* 审批 / 提问卡片 */
+.ss-ask{border:1px solid rgba(250,204,21,0.4);background:rgba(250,204,21,0.06);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+.ss-ask .ss-ask-title{font-size:12.5px;font-weight:600;color:#FDE68A;display:flex;align-items:center;gap:7px}
+.ss-ask .ss-ask-sub{font-size:12px;color:var(--text-2);line-height:1.6}
+.ss-ask .ss-ask-opts{display:flex;flex-direction:column;gap:6px}
+.ss-ask-opt{display:flex;align-items:flex-start;gap:9px;padding:8px 10px;border:1px solid var(--border);border-radius:9px;cursor:pointer;font-size:12.5px;color:var(--text-1);transition:border-color .15s,background .15s}
+.ss-ask-opt:hover{border-color:rgba(34,197,94,0.45);background:rgba(34,197,94,0.05)}
+.ss-ask-opt input{margin-top:3px;accent-color:#22C55E}
+.ss-ask-opt .ss-ask-opt-txt{flex:1}
+.ss-ask-opt .ss-ask-opt-desc{display:block;font-size:11px;color:var(--text-4);margin-top:2px}
+.ss-ask .ss-ask-btns{display:flex;gap:8px;justify-content:flex-end}
+.ss-ask .ss-ask-btns button{font-size:12px;padding:6px 16px;border-radius:8px;cursor:pointer;border:1px solid var(--border);background:rgba(255,255,255,0.04);color:var(--text-1);transition:all .15s}
+.ss-ask .ss-ask-btns button.allow{background:linear-gradient(180deg,#22C55E,#16A34A);border-color:transparent;color:#04120A;font-weight:600}
+.ss-ask .ss-ask-btns button.deny:hover{border-color:rgba(248,113,113,0.5);color:#FCA5A5}
+.ss-ask.resolved{opacity:0.55;pointer-events:none}
+/* 用户图片附件（气泡内） */
+.ss-imgs{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.ss-imgs img{max-width:180px;max-height:140px;border-radius:9px;border:1px solid var(--border);object-fit:cover;cursor:zoom-in}
+/* 流式输出光标 */
+.ss-caret{display:inline-block;width:7px;height:15px;vertical-align:-2px;margin-left:2px;background:var(--green);border-radius:1.5px;animation:ss-caret-blink 0.9s steps(2) infinite}
+@keyframes ss-caret-blink{50%{opacity:0}}
+/* 运行中指示（思考中…） */
+.ss-thinking{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--text-3);padding:4px 2px}
+.ss-thinking .ss-dots{display:inline-flex;gap:4px}
+.ss-thinking .ss-dots i{width:5px;height:5px;border-radius:50%;background:var(--green);animation:ss-dot-jump 1.2s infinite}
+.ss-thinking .ss-dots i:nth-child(2){animation-delay:0.15s}
+.ss-thinking .ss-dots i:nth-child(3){animation-delay:0.3s}
+@keyframes ss-dot-jump{0%,60%,100%{transform:translateY(0);opacity:0.5}30%{transform:translateY(-4px);opacity:1}}
+/* 加载更早消息 */
+.ss-loadmore{text-align:center;margin:0 0 6px}
+.ss-loadmore button{font-size:12px;color:var(--text-3);background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:999px;padding:5px 18px;cursor:pointer;transition:color .15s,border-color .15s}
+.ss-loadmore button:hover{color:var(--green);border-color:rgba(34,197,94,0.4)}
+/* 空态 */
+.ss-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--text-4);font-size:13px;padding:40px 20px;text-align:center}
+.ss-empty .ss-empty-ico{font-size:34px;filter:grayscale(0.2)}
+/* ---------- 输入栏 ---------- */
+.ss-composer{flex-shrink:0;border-top:1px solid var(--border);background:rgba(10,13,18,0.92);padding:10px 14px 12px;position:relative}
+.ssc-box{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:8px}
+.ssc-chips{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ssc-chip{
+  display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--text-2);
+  background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:999px;
+  padding:3px 11px;cursor:pointer;user-select:none;transition:all .15s;white-space:nowrap;
+}
+.ssc-chip:hover{border-color:rgba(34,197,94,0.45);color:var(--text-1)}
+.ssc-chip.plan-on{color:#FDE68A;border-color:rgba(250,204,21,0.5);background:rgba(250,204,21,0.08)}
+.ssc-chip .ssc-chip-val{color:var(--text-1);font-weight:600}
+.ssc-chip.queue-chip{cursor:default}
+.ssc-chip.queue-chip .ssc-q-remove{cursor:pointer;color:#FCA5A5;margin-left:2px}
+.ssc-chip.queue-chip .ssc-q-steer{cursor:pointer;color:#6EE7B7;margin-left:4px}
+.ssc-chip.queue-chip .ssc-q-steer:hover{text-decoration:underline}
+.ssc-status{margin-left:auto;font-size:11px;color:var(--text-5);display:inline-flex;align-items:center;gap:6px}
+.ssc-status .ssc-run{color:var(--green)}
+.ssc-status .ssc-run::before{content:'';display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--green);margin-right:5px;animation:ss-dot-jump 1.2s infinite}
+/* 附件缩略图栏 */
+.ssc-attach{display:flex;flex-wrap:wrap;gap:8px}
+.ssc-attach-item{position:relative;width:64px;height:64px;border-radius:9px;overflow:hidden;border:1px solid var(--border)}
+.ssc-attach-item img{width:100%;height:100%;object-fit:cover}
+.ssc-attach-item .ssc-attach-x{
+  position:absolute;top:2px;right:2px;width:17px;height:17px;border-radius:5px;
+  background:rgba(0,0,0,0.65);color:#fff;display:grid;place-items:center;cursor:pointer;font-size:10px;
+}
+.ssc-attach-item .ssc-attach-x:hover{background:rgba(239,68,68,0.8)}
+/* 附件预览 chip（26px 缩略图 + 名称 + 移除） */
+.ssc-atch{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--text-2);background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:8px;padding:3px 7px 3px 4px;max-width:240px}
+.ssc-atch img{display:block}
+.ssc-atch .ssc-atch-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px}
+.ssc-atch .ssc-atch-x{cursor:pointer;color:#FCA5A5;flex-shrink:0}
+.ssc-atch .ssc-atch-x:hover{color:#F87171}
+/* 输入区主体 */
+.ssc-main{display:flex;align-items:flex-end;gap:8px;background:rgba(255,255,255,0.035);border:1px solid var(--border);border-radius:14px;padding:8px 8px 8px 14px;transition:border-color .15s}
+.ssc-main:focus-within{border-color:rgba(34,197,94,0.5);box-shadow:0 0 0 3px rgba(34,197,94,0.08)}
+#sscInput{
+  flex:1;min-width:0;background:none;border:none;outline:none;resize:none;
+  color:var(--text-1);font-size:13.5px;line-height:1.6;font-family:inherit;
+  max-height:160px;padding:4px 0;
+}
+#sscInput::placeholder{color:var(--text-5)}
+.ssc-btn{
+  width:34px;height:34px;border-radius:10px;display:grid;place-items:center;cursor:pointer;flex-shrink:0;
+  background:rgba(255,255,255,0.05);border:1px solid var(--border);color:var(--text-2);transition:all .15s;
+}
+.ssc-btn:hover{color:var(--text-1);border-color:var(--border-strong)}
+.ssc-btn.send{background:linear-gradient(180deg,#22C55E,#16A34A);border-color:transparent;color:#04120A}
+.ssc-btn.send:hover{filter:brightness(1.1);box-shadow:0 4px 14px rgba(34,197,94,0.35)}
+.ssc-btn.send:disabled{opacity:0.4;cursor:not-allowed;filter:none;box-shadow:none}
+.ssc-btn.stop{background:rgba(248,113,113,0.15);border-color:rgba(248,113,113,0.45);color:#FCA5A5}
+.ssc-btn.stop:hover{background:rgba(248,113,113,0.28)}
+.ssc-hint{font-size:10.5px;color:var(--text-5);display:flex;align-items:center;gap:10px;padding:0 4px}
+.ssc-hint .kbd{font-family:'JetBrains Mono',monospace;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:4px;padding:0 5px;font-size:10px}
+/* 斜杠命令菜单 */
+.ssc-menu{
+  position:absolute;bottom:calc(100% - 4px);left:14px;right:14px;max-height:280px;overflow-y:auto;
+  background:#0F131A;border:1px solid var(--border-strong);border-radius:12px;
+  box-shadow:0 -12px 40px rgba(0,0,0,0.55);padding:6px;z-index:5;
+}
+.ssc-menu-item{display:flex;align-items:baseline;gap:10px;padding:7px 10px;border-radius:8px;cursor:pointer;font-size:12.5px}
+.ssc-menu-item.active,.ssc-menu-item:hover{background:rgba(34,197,94,0.10)}
+.ssc-menu-item .ssc-m-name{font-family:'JetBrains Mono',monospace;color:#6EE7B7;flex-shrink:0}
+.ssc-menu-item .ssc-m-desc{color:var(--text-3);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.ssc-menu-item .ssc-m-hint{color:var(--text-5);font-size:10.5px;font-family:'JetBrains Mono',monospace;flex-shrink:0}
+.ssc-menu-empty{padding:12px;text-align:center;color:var(--text-5);font-size:12px}
+/* 模型选择弹层 */
+.ssc-pop{
+  position:absolute;bottom:calc(100% - 4px);left:14px;min-width:280px;max-width:400px;max-height:320px;overflow-y:auto;
+  background:#0F131A;border:1px solid var(--border-strong);border-radius:12px;
+  box-shadow:0 -12px 40px rgba(0,0,0,0.55);padding:6px;z-index:6;
+}
+.ssc-pop-group{font-size:10.5px;color:var(--green);letter-spacing:1px;padding:8px 10px 4px;text-transform:uppercase}
+.ssc-pop-head{display:flex;align-items:center;justify-content:space-between;padding:4px 8px 6px;border-bottom:1px solid var(--border);margin-bottom:2px}
+.ssc-pop-head .ssc-pop-title{font-size:11px;color:var(--text-3);font-weight:600;letter-spacing:0.5px}
+.ssc-pop-refresh{
+  font-size:11px;color:var(--text-3);cursor:pointer;border:1px solid var(--border-strong);border-radius:7px;
+  background:rgba(255,255,255,0.03);padding:2px 9px;transition:color .15s,border-color .15s;
+}
+.ssc-pop-refresh:hover{color:var(--green);border-color:rgba(34,197,94,0.4)}
+.ssc-pop-item{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;cursor:pointer;font-size:12.5px;color:var(--text-2)}
+.ssc-pop-item:hover{background:rgba(255,255,255,0.05);color:var(--text-1)}
+.ssc-pop-item.cur{color:var(--green)}
+.ssc-pop-item .ssc-pop-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ssc-pop-item .ssc-pop-check{flex-shrink:0;color:var(--green);font-size:11px}
+/* 工作模式弹层条目（名称+描述两行）与锁定态/底注 */
+.ssc-pop-item .ssc-pop-txt{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.ssc-pop-item .ssc-pop-txt .ssc-pop-name{flex:none}
+.ssc-pop-item .ssc-pop-desc{font-size:11px;color:var(--text-5);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px}
+.ssc-pop-item.locked{cursor:not-allowed;opacity:.55}
+.ssc-pop-foot{padding:8px 10px 5px;font-size:11px;color:var(--text-5);border-top:1px solid var(--border);margin-top:4px}
 
 /* ============ 三栏工作台（智能体会话窗口） ============ */
 .session-workbench{flex:1;min-height:0;display:flex;gap:0;overflow:hidden}
@@ -1331,6 +1518,7 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 .sw-mid{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
 .sw-right{
   width:296px;flex-shrink:0;display:flex;flex-direction:column;min-height:0;
+  overflow-y:auto; /* 兜底：卡片内容过高时整栏可滚，保证书架与「添加文档」永不被裁剪 */
   border-left:1px solid var(--border);
   background:linear-gradient(180deg, rgba(34,197,94,0.03), transparent 30%), rgba(10,13,18,0.9);
 }
@@ -1404,7 +1592,7 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 .sw-col-title::before{content:'';width:3px;height:12px;border-radius:2px;background:var(--green);box-shadow:0 0 8px rgba(34,197,94,.6)}
 /* --- 右栏：上下文卡片 --- */
 .sw-ctx{margin:12px;padding:14px;border-radius:14px;flex-shrink:0;background:rgba(255,255,255,0.02);border:1px solid var(--border)}
-.sw-ctx-body{display:flex;flex-direction:column;align-items:center;gap:10px;padding:6px 0 12px}
+.sw-ctx-body{display:flex;flex-direction:column;align-items:center;gap:10px;padding:6px 0 12px;max-height:190px;overflow-y:auto}
 .sw-ctx-empty{font-size:12px;color:var(--text-4);padding:18px 0}
 .sw-ring-wrap{position:relative;width:84px;height:84px}
 .sw-ring{transform:rotate(-90deg)}
@@ -1427,9 +1615,15 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 .sw-ctx-compact:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-1px)}
 .sw-ctx-compact:disabled{opacity:.4;cursor:default}
 .sw-ctx-last{font-size:10px;color:var(--text-5);margin-top:8px;text-align:center;font-family:'JetBrains Mono',monospace}
+/* --- 右栏：会话统计卡（三行统计条，复用 sw-ctx 卡片容器） --- */
+.sw-stat-row{display:flex;justify-content:space-between;align-items:baseline;padding:5px 2px;font-size:12px}
+.sw-stat-row .k{color:var(--text-3)}
+.sw-stat-row .v{color:var(--text-1);font-family:'JetBrains Mono',monospace;font-weight:600}
+.sw-stat-sub{font-size:10px;color:var(--text-4);margin-top:-3px;padding:0 2px 4px}
 /* --- 右栏：书架 --- */
-.sw-shelf{flex:1;min-height:0;display:flex;flex-direction:column;margin:0 12px 12px;padding:14px;border-radius:14px;background:rgba(255,255,255,0.02);border:1px solid var(--border)}
+.sw-shelf{flex:1 0 auto;min-height:0;display:flex;flex-direction:column;margin:0 12px 12px;padding:14px;border-radius:14px;background:rgba(255,255,255,0.02);border:1px solid var(--border)}
 .sw-shelf-count{margin-left:auto;font-size:10.5px;color:var(--text-4);font-family:'JetBrains Mono',monospace}
+.sw-shelf-note{font-size:10px;color:var(--text-5);line-height:1.5;margin:-4px 2px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sw-shelf-list{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:6px}
 .sw-shelf-empty{font-size:11.5px;color:var(--text-5);padding:16px 4px;line-height:1.7}
 .sw-shelf-item{
@@ -1441,8 +1635,9 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 .sw-shelf-item .sd-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;margin-top:4px;box-shadow:0 0 7px currentColor}
 .sw-shelf-item .sd-main{flex:1;min-width:0}
 .sw-shelf-item .sd-title{font-size:12px;color:var(--text-2);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sw-shelf-item .sd-tags{display:flex;gap:4px;flex-wrap:wrap;margin-top:3px}
-.sw-shelf-item .sd-tag{font-size:9.5px;color:var(--text-4);background:rgba(255,255,255,0.05);border-radius:5px;padding:1px 6px}
+.sw-shelf-item .sd-badges{display:flex;gap:4px;flex-wrap:wrap;margin-top:3px;align-items:center}
+/* 所属分类/所属库名 小徽标（风格仿 rs-badge） */
+.sw-shelf-item .sd-cat,.sw-shelf-item .sd-lib{font-size:9.5px;padding:1px 7px;border-radius:999px;border:1px solid var(--border);color:var(--text-4);background:rgba(255,255,255,0.04);flex-shrink:0}
 .sw-shelf-item .sd-del{
   flex-shrink:0;width:22px;height:22px;border-radius:6px;display:grid;place-items:center;
   color:var(--text-4);border:1px solid transparent;cursor:pointer;font-size:13px;
@@ -1858,7 +2053,7 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 .ar-group-chip .gc-num{font-size:10.5px;color:var(--text-4);font-family:'JetBrains Mono',monospace}
 .ar-new-inline{display:flex;gap:6px}
 .ar-new-inline .form-input{height:34px;font-size:12.5px}
-.ar-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.ar-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
 .ar-card{
   position:relative;overflow:hidden;
   background:linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015));
@@ -1882,13 +2077,14 @@ select.form-input option{background:#12161F;color:var(--text-2)}
   padding:7px 10px;border-radius:9px;
 }
 .ar-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.ar-stats.four{grid-template-columns:repeat(4,1fr)}
+/* 4 项统计（含 Token 消耗）改 2×2：格子更宽，保证「小数点后两位 + 单位」完整展示不被省略号截断 */
+.ar-stats.four{grid-template-columns:repeat(2,1fr)}
 .ar-stats .st{
   background:rgba(255,255,255,0.03);border:1px solid var(--border);
   border-radius:9px;padding:8px 10px;display:flex;flex-direction:column;gap:3px;min-width:0;
 }
 .ar-stats .st .k{font-size:10px;color:var(--text-4);letter-spacing:0.3px;white-space:nowrap}
-.ar-stats .st .v{font-size:14px;font-weight:700;color:var(--text-1);font-family:'JetBrains Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ar-stats .st .v{font-size:13.5px;font-weight:700;color:var(--text-1);font-family:'JetBrains Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 /* 可点击归档卡片 + 底部打开提示 */
 .ar-card-click{cursor:pointer}
 .ar-card-click:hover{border-color:rgba(34,197,94,0.45);box-shadow:0 0 0 1px rgba(34,197,94,0.18), 0 14px 30px rgba(0,0,0,0.4)}
@@ -2112,24 +2308,7 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 }
 
 /* ============ 资源仓库页 ============ */
-/* --- 插件/技能启用开关（iOS 式 toggle，绿色启用） --- */
-.rs-toggle{
-  position:relative;width:38px;height:21px;border-radius:999px;cursor:pointer;flex-shrink:0;
-  background:rgba(255,255,255,0.09);border:1px solid var(--border-strong);
-  transition:background .2s, border-color .2s, box-shadow .2s;
-}
-.rs-toggle::after{
-  content:'';position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;
-  background:#94A3B8;transition:left .2s, background .2s;
-}
-.rs-toggle.on{
-  background:rgba(34,197,94,0.28);border-color:rgba(34,197,94,0.55);
-  box-shadow:0 0 12px rgba(34,197,94,0.18);
-}
-.rs-toggle.on::after{left:19px;background:linear-gradient(180deg,#4ADE80,#22C55E);box-shadow:0 0 8px rgba(34,197,94,0.7)}
-.rs-toggle-row{display:flex;align-items:center;gap:9px;margin-top:auto;padding-top:8px}
-.rs-toggle-row .rs-tg-label{font-size:10.5px;color:var(--text-4);letter-spacing:0.3px}
-.rs-toggle-row .rs-tg-label.on{color:#86EFAC}
+/* dsh 实时数据只读展示：插件/技能无启停开关（原 toggle 已随 mock 时代移除） */
 .rs-card.disabled-card{opacity:.55;filter:saturate(.6)}
 .rs-card.disabled-card .rs-card-title{color:var(--text-3);text-decoration:line-through;text-decoration-color:rgba(255,255,255,0.25)}
 /* --- Wiki 分类板块（图书馆式） --- */
@@ -2218,6 +2397,15 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 .rs-badge.preset-code{color:#93C5FD;background:rgba(59,130,246,0.10);border-color:rgba(59,130,246,0.28)}
 .rs-badge.preset-minimal{color:#A3A6B4;background:rgba(148,163,184,0.10);border-color:rgba(148,163,184,0.28)}
 .rs-badge.preset-cordis{color:#D8B4FE;background:rgba(168,85,247,0.10);border-color:rgba(168,85,247,0.28)}
+/* 徽标：dsh 同步数据（插件 trust/默认、技能调用方式）与损坏状态 */
+.rs-badge.trust-system{color:#93C5FD;background:rgba(59,130,246,0.10);border-color:rgba(59,130,246,0.28)}
+.rs-badge.trust-user{color:#FCD34D;background:rgba(245,158,11,0.10);border-color:rgba(245,158,11,0.28)}
+.rs-badge.is-default{color:#86EFAC;background:rgba(34,197,94,0.10);border-color:rgba(34,197,94,0.28)}
+.rs-badge.skill-auto{color:#86EFAC;background:rgba(34,197,94,0.10);border-color:rgba(34,197,94,0.28)}
+.rs-card-broken{
+  font-size:11px;color:#FCA5A5;line-height:1.5;
+  background:rgba(248,113,113,0.08);border:1px solid rgba(248,113,113,0.30);border-radius:8px;padding:6px 9px;
+}
 .rs-cat-badge{font-size:10px;border-radius:5px;padding:1px 7px;font-weight:600;white-space:nowrap}
 /* 空状态 */
 .rs-empty{
@@ -2398,6 +2586,21 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 }
 .set-custom-item .ci-del:hover{color:#FCA5A5;border-color:rgba(248,113,113,0.4)}
 .set-empty-hint{font-size:12px;color:var(--text-4);padding:6px 2px}
+/* --- 内置供应商目录：内联配置表单 --- */
+.set-catalog-form{
+  border:1px dashed rgba(34,197,94,0.35);border-radius:10px;padding:12px 14px;
+  background:rgba(34,197,94,0.03);margin:-4px 0 10px;
+}
+.set-catalog-form .set-actions{margin-top:12px}
+.set-catalog-form .btn{height:32px;font-size:12px;padding:0 14px}
+.mono{font-family:'JetBrains Mono',monospace}
+/* --- 默认模型不可用警示条 --- */
+.set-warn-bar{
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:10px 14px;border-radius:10px;font-size:12.5px;line-height:1.6;
+  color:#FCA5A5;background:rgba(248,113,113,0.08);border:1px solid rgba(248,113,113,0.35);
+}
+.set-warn-bar .btn{height:30px;font-size:12px;padding:0 14px;flex-shrink:0}
 /* --- 分级推荐档位按钮 --- */
 .set-tiers{display:flex;flex-wrap:wrap;gap:8px}
 .set-tier{
@@ -3212,6 +3415,7 @@ select.form-input option{background:#12161F;color:var(--text-2)}
             <span class="set-chip">会话默认</span>
           </div>
           <div class="set-card-body">
+            <div id="scDefaultWarn" hidden></div>
             <div class="set-adv-grid">
               <div>
                 <div class="form-label">Provider</div>
@@ -3320,10 +3524,22 @@ select.form-input option{background:#12161F;color:var(--text-2)}
           <div id="setAdvList" style="margin-top:12px"></div>
         </details>
 
+        <div class="set-card" id="setCatalogCard">
+          <div class="set-card-head">
+            <div class="set-card-title">内置供应商目录</div>
+            <span class="set-chip" id="scCatalogCount">—</span>
+          </div>
+          <div class="set-card-body">
+            <div class="form-hint">从已安装目录启用第三方供应商（OpenAI / Anthropic / Google / Groq / 等数十家）。填写 API 密钥即可启用；可选覆盖 Base URL 指向代理、中转或本地网关。启用后自动出现在会话模型选择器与默认模型列表中。</div>
+            <div id="scCatalogList"></div>
+            <span class="set-msg" id="scCatalogMsg"></span>
+          </div>
+        </div>
+
         <div class="set-card">
           <div class="set-card-head">
             <div class="set-card-title">自定义 Provider</div>
-            <span class="set-chip">OpenAI 兼容</span>
+            <span class="set-chip">OpenAI 兼容 · 本地部署</span>
           </div>
           <div class="set-card-body">
             <div class="set-row">
@@ -3331,7 +3547,7 @@ select.form-input option{background:#12161F;color:var(--text-2)}
               <div id="scCustomList"></div>
             </div>
             <details class="set-adv" id="scCustomAddDetails">
-              <summary>＋ 添加自定义 Provider</summary>
+              <summary id="scCustomAddSummary">＋ 添加自定义 Provider</summary>
               <div class="set-custom-grid">
                 <div>
                   <div class="form-label">Route ID <span class="req">*</span></div>
@@ -3343,7 +3559,7 @@ select.form-input option{background:#12161F;color:var(--text-2)}
                 </div>
                 <div>
                   <div class="form-label">Base URL <span class="req">*</span></div>
-                  <input class="form-input" id="scCustomBaseURL" placeholder="https://api.openai.com/v1" spellcheck="false" />
+                  <input class="form-input" id="scCustomBaseURL" placeholder="http://127.0.0.1:11434/v1" spellcheck="false" />
                 </div>
                 <div>
                   <div class="form-label">API 协议</div>
@@ -3354,16 +3570,20 @@ select.form-input option{background:#12161F;color:var(--text-2)}
                   </select>
                 </div>
                 <div>
-                  <div class="form-label">API Key</div>
+                  <div class="form-label">API Key（本地端点可留空）</div>
                   <input class="form-input" id="scCustomKey" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
                 </div>
                 <div>
                   <div class="form-label">模型列表（逗号分隔）</div>
-                  <input class="form-input" id="scCustomModels" placeholder="gpt-4o, gpt-4o-mini" spellcheck="false" />
+                  <div class="set-keyline">
+                    <input class="form-input" id="scCustomModels" placeholder="qwen3:8b, deepseek-r1:7b" spellcheck="false" />
+                    <button class="btn btn-ghost" id="scCustomDiscover" type="button" title="从 Base URL 的 /models 接口获取可用模型（OpenAI 兼容，本地 vLLM / llama.cpp / ollama 均支持）">获取模型</button>
+                  </div>
                 </div>
               </div>
               <div class="set-actions">
                 <button class="btn btn-primary" id="scCustomSave">保存自定义 Provider</button>
+                <button class="btn btn-ghost" id="scCustomCancelEdit" hidden>取消编辑</button>
                 <span class="set-msg" id="scCustomMsg"></span>
               </div>
             </details>
@@ -3483,15 +3703,7 @@ select.form-input option{background:#12161F;color:var(--text-2)}
       <div>
         <div class="form-label">工作区名称<span class="req">*</span></div>
         <input class="form-input" id="wsNameInput" placeholder="例如：作品分享稿件" maxlength="24" />
-      </div>
-      <div>
-        <div class="form-label">本地文件夹绝对路径<span class="req">*</span></div>
-        <input class="form-input" id="wsPathInput" placeholder="e:\projects\demo" spellcheck="false" />
-        <div class="form-hint">请填写本地文件夹的 Windows 绝对路径，例如 e:\projects\demo，工作区文件将归档到该目录。</div>
-        <label class="form-check">
-          <input type="checkbox" id="wsCreateCheck" checked />
-          目录不存在时自动创建
-        </label>
+        <div class="form-hint">将在数据目录 data/workspaces/ 下自动创建同名文件夹，并注册为 dsh 智能体工作区（实时同步）。</div>
       </div>
       <div class="modal-error" id="wsFormError"></div>
     </div>
@@ -3658,7 +3870,7 @@ select.form-input option{background:#12161F;color:var(--text-2)}
         </button>
       </div>
     </div>
-    <!-- 三栏工作台：左（身份卡/文件树/统计）｜中（iframe 对话）｜右（上下文/书架） -->
+    <!-- 三栏工作台：左（身份卡/文件树/统计）｜中（自研对话组件）｜右（上下文/书架） -->
     <div class="session-workbench">
       <!-- 左栏 -->
       <div class="sw-left">
@@ -3694,15 +3906,45 @@ select.form-input option{background:#12161F;color:var(--text-2)}
           <span class="sw-stats-txt" id="swStatsTxt">文件 0 个 · 0 B</span>
         </div>
       </div>
-      <!-- 中栏：iframe 对话区 -->
+      <!-- 中栏：自研对话区（直连 dsh harness RPC + WS 事件流） -->
       <div class="sw-mid">
         <div class="session-body">
-          <iframe id="sessionFrame" title="智能体会话"></iframe>
+          <div class="ss-chat" id="ssChat">
+            <!-- 消息列表 -->
+            <div class="ss-chat-scroll" id="ssChatScroll">
+              <div class="ss-chat-list" id="ssChatList"></div>
+            </div>
+            <!-- 输入栏：功能键（模型/权限/计划模式/图片附件/发送/停止）+ 斜杠命令菜单 + steer 队列 -->
+            <div class="ss-composer" id="ssComposer">
+              <div class="ssc-box">
+                <div class="ssc-chips" id="sscChips"></div>
+                <div class="ssc-attach" id="sscAttach" hidden></div>
+                <div class="ssc-main">
+                  <textarea id="sscInput" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行；输入 / 唤起命令"></textarea>
+                  <button class="ssc-btn" id="sscAttachBtn" title="添加图片附件">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                  </button>
+                  <input type="file" id="sscAttachInput" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+                  <button class="ssc-btn send" id="sscSendBtn" title="发送（智能体运行中发送将作为转向指令插入队列）">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                  </button>
+                  <button class="ssc-btn stop" id="sscStopBtn" title="停止生成" hidden>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2"/></svg>
+                  </button>
+                </div>
+                <div class="ssc-hint"><span><span class="kbd">Enter</span> 发送</span><span><span class="kbd">Shift+Enter</span> 换行</span><span><span class="kbd">/</span> 命令</span></div>
+              </div>
+              <!-- 斜杠命令菜单 -->
+              <div class="ssc-menu" id="sscMenu" hidden></div>
+              <!-- 模型 / 权限 选择弹层 -->
+              <div class="ssc-pop" id="sscPop" hidden></div>
+            </div>
+          </div>
           <div class="session-loading" id="ssLoading">
             <div class="spinner"></div>
             <div>正在连接智能体...</div>
           </div>
-          <!-- 只读拦截条：覆盖 iframe 底部 150px（openSessionModal(task,{readonly:true}) 时显示） -->
+          <!-- 只读拦截条：覆盖输入栏区域（openSessionModal(task,{readonly:true}) 时显示） -->
           <div class="session-readonly-bar" id="ssReadonlyBar" hidden>
             <div class="srb-info">
               <div class="srb-title">
@@ -3729,8 +3971,14 @@ select.form-input option{background:#12161F;color:var(--text-2)}
           </div>
           <button class="sw-ctx-compact" id="swCtxCompact" disabled>提前压缩上下文</button>
         </div>
+        <!-- 会话统计卡：缓存命中率 / Token 速度 / 参考费用（session.history 投影轮询，与上下文卡同源） -->
+        <div class="sw-ctx" id="swStatsCard">
+          <div class="sw-col-title">会话统计</div>
+          <div class="sw-ctx-body" id="swStatsBody"><div class="sw-ctx-empty">开始对话后统计</div></div>
+        </div>
         <div class="sw-shelf">
           <div class="sw-col-title">会话书架<span class="sw-shelf-count" id="swShelfCount">0/10</span></div>
+          <div class="sw-shelf-note" title="文件名/所属分类/所属库名 已注入会话上下文（AGENTS.md），智能体按需读取文件内容；添加/移除即时生效">文件名/所属分类/所属库名 已注入会话上下文（AGENTS.md），智能体按需读取文件内容；添加/移除即时生效</div>
           <div class="sw-shelf-list" id="swShelfList">
             <div class="sw-shelf-empty">书架为空。点击下方按钮从资源仓库添加文档，供智能体检索引用。</div>
           </div>
@@ -3987,6 +4235,30 @@ select.form-input option{background:#12161F;color:var(--text-2)}
   </div>
 </div>
 
+<!-- ===== 弹窗：智能体记忆（模板 MEMORY.md 查看编辑/重置） ===== -->
+<div class="modal-mask" id="modal-rs-memory">
+  <div class="modal" style="width:560px">
+    <div class="modal-head">
+      <h3 id="rsMemoryTitle">智能体记忆</h3>
+      <div class="modal-close" data-close title="关闭">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div>
+        <div class="form-label">MEMORY.md（该智能体模板的长期记忆，随任务会话读写）</div>
+        <textarea class="form-textarea" id="rsMemoryContent" style="min-height:260px" placeholder="加载中..."></textarea>
+      </div>
+      <div class="modal-error" id="rsMemoryError"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>关闭</button>
+      <button class="btn btn-ghost" id="rsMemoryResetBtn">重置</button>
+      <button class="btn btn-primary" id="rsMemorySaveBtn">保存</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== 弹窗：新建 Wiki 文档 ===== -->
 <div class="modal-mask" id="modal-rs-doc">
   <div class="modal" style="width:640px">
@@ -4174,25 +4446,33 @@ async function loadWorkspaces() {
   try {
     const data = await fetchJson('/api/workspaces');
     WB.workspaces = Array.isArray(data.workspaces) ? data.workspaces : [];
+    WB.totalTaskCount = data.totalTaskCount != null ? data.totalTaskCount : null;
   } catch (e) {
     WB.workspaces = [];
+    WB.totalTaskCount = null;
     console.error('[DSH Work Buddy] 加载工作区失败:', e);
   }
   // 当前选中工作区已被删除时回落到「全部工作区」
   if (WB.currentWs !== 'all' && !WB.workspaces.some(w => w.id === WB.currentWs)) WB.currentWs = 'all';
   renderWorkspaces();
-  // 静默同步到 harness（我的工作区 = 智能体会话 files 列表的唯一数据源；顺带界面中文化）
-  // 每次页面加载幂等执行一次，失败不影响 DSH Work Buddy 自身功能
+  // 智能体服务探测（一次/页面加载）：harness 在列表请求后才就绪时，静默重拉列表对齐
   if (!WB._harnessSynced) {
     WB._harnessSynced = true;
     fetchJson('/api/workspaces/sync-harness', { method: 'POST', body: '{}' })
-      .then(r => {
-        if (r && r.harnessUp) {
-          const parts = [];
-          if (r.registered && r.registered.length) parts.push(`已注册 ${r.registered.length} 个工作区到智能体会话`);
-          if (r.removed && r.removed.length) parts.push(`已从智能体会话移除 ${r.removed.length} 个失效工作区`);
-          if (parts.length) toast('智能体会话工作区已同步：' + parts.join('，'));
-        }
+      .then(async r => {
+        if (!(r && r.harnessUp)) return;
+        try {
+          const data = await fetchJson('/api/workspaces');
+          const next = Array.isArray(data.workspaces) ? data.workspaces : [];
+          WB.totalTaskCount = data.totalTaskCount != null ? data.totalTaskCount : WB.totalTaskCount;
+          const oldIds = WB.workspaces.map(w => w.id).sort().join(',');
+          const newIds = next.map(w => w.id).sort().join(',');
+          if (oldIds !== newIds) {
+            WB.workspaces = next;
+            renderWorkspaces();
+            toast(`智能体工作区列表已同步（共 ${next.length} 个）`);
+          }
+        } catch { /* 重拉失败：保持现状 */ }
       })
       .catch(() => { /* harness 未启动：下次加载再试 */ });
   }
@@ -4200,13 +4480,24 @@ async function loadWorkspaces() {
 
 function renderWorkspaces() {
   const list = document.getElementById('workspaceList');
-  // 列表顶部固定一项「全部工作区」，其后为各工作区（每项带删除 ✕；仅「我的工作区」可新增/删除工作区）
-  const items = [{ id: 'all', name: '全部工作区' }].concat(WB.workspaces.map(w => ({ id: w.id, name: w.name })));
+  // 列表顶部固定一项「全部工作区」，其后为各 dsh 同步工作区（name=title、path 小字、任务数徽标；每项带删除 ✕）
+  const items = [{ id: 'all', name: '全部工作区', taskCount: WB.totalTaskCount }].concat(
+    WB.workspaces.map(w => ({ id: w.id, name: w.name, path: w.path, taskCount: w.taskCount != null ? w.taskCount : 0 }))
+  );
   if (!items.some(i => i.id === WB.currentWs)) WB.currentWs = 'all';
   list.innerHTML = items.map(i => `
     <div class="workspace-item${i.id === WB.currentWs ? ' active' : ''}" data-ws="${esc(i.id)}">
       <span class="ws-dot"></span>
-      <span class="ws-name">${esc(i.name)}</span>
+      ${i.id === 'all'
+        ? `<span class="ws-name">${esc(i.name)}</span>
+           <span class="ws-count" title="全部工作区任务总数">${esc(String(i.taskCount != null ? i.taskCount : 0))}</span>`
+        : `<div class="ws-meta">
+            <div class="ws-name-row">
+              <span class="ws-name">${esc(i.name)}</span>
+              <span class="ws-count" title="该工作区下的任务项目数">${esc(String(i.taskCount || 0))}</span>
+            </div>
+            <div class="ws-path" title="${esc(i.path || '')}">${esc(i.path || '')}</div>
+          </div>`}
       ${i.id === 'all' ? '' : `<button class="ws-del" title="删除工作区「${esc(i.name)}」" data-del="${esc(i.id)}">
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>`}
@@ -4227,6 +4518,12 @@ async function refreshTasks() {
   try {
     const data = await fetchJson('/api/tasks?ws=' + encodeURIComponent(WB.currentWs));
     WB.tasks = Array.isArray(data.tasks) ? data.tasks : [];
+    // 同步工作区任务计数（服务端附带全量统计）：任务创建/删除/完成后侧栏徽标实时更新
+    if (data.taskCountByWs) {
+      WB.workspaces.forEach((w) => { w.taskCount = data.taskCountByWs[w.id] || 0; });
+      WB.totalTaskCount = data.totalTaskCount != null ? data.totalTaskCount : WB.totalTaskCount;
+      renderWorkspaces();
+    }
   } catch (e) {
     WB.tasks = [];
     console.error('[DSH Work Buddy] 加载任务失败:', e);
@@ -4481,12 +4778,10 @@ document.querySelectorAll('.modal-mask').forEach(mask => {
   });
 });
 
-// ---------- 新建工作区弹窗 ----------
+// ---------- 新建工作区弹窗（仅输入名称：目录自动创建于 data/workspaces/ 并注册 dsh） ----------
 const modalNewWs = document.getElementById('modal-new-ws');
 document.getElementById('wsAddBtn').addEventListener('click', () => {
   document.getElementById('wsNameInput').value = '';
-  document.getElementById('wsPathInput').value = '';
-  document.getElementById('wsCreateCheck').checked = true;
   hideError(document.getElementById('wsFormError'));
   showModal(modalNewWs);
 });
@@ -4495,23 +4790,20 @@ document.getElementById('wsSubmitBtn').addEventListener('click', async () => {
   const errEl = document.getElementById('wsFormError');
   const btn = document.getElementById('wsSubmitBtn');
   const name = document.getElementById('wsNameInput').value.trim();
-  const wsPath = document.getElementById('wsPathInput').value.trim();
-  const create = document.getElementById('wsCreateCheck').checked;
   hideError(errEl);
   if (!name) return showError(errEl, '请填写工作区名称');
-  if (!wsPath) return showError(errEl, '请填写本地文件夹绝对路径');
   btn.disabled = true;
   btn.textContent = '创建中…';
   try {
     const ws = await fetchJson('/api/workspaces', {
       method: 'POST',
-      body: JSON.stringify({ name, path: wsPath, create })
+      body: JSON.stringify({ name })
     });
     hideModal(modalNewWs);
     await loadWorkspaces();   // 刷新工作区列表
     setCurrentWorkspace(ws.id); // 选中新工作区（联动刷新看板）
   } catch (e) {
-    showError(errEl, e.message); // 400 等错误直接展示服务端信息
+    showError(errEl, e.message); // 400/502 等错误直接展示服务端信息
   } finally {
     btn.disabled = false;
     btn.textContent = '创建工作区';
@@ -4713,9 +5005,8 @@ document.getElementById('ntSubmitBtn').addEventListener('click', async () => {
 
 // 完成任务入口已移除（智能详情仅用于展示任务内容）；完成任务改由任务行/会话内操作
 
-// ---------- 会话窗口弹层（iframe 经 /harness/ 同源代理嵌入 dsh web） ----------
+// ---------- 会话窗口弹层（中栏自研对话组件，直连 dsh harness RPC + WS 事件流） ----------
 const modalSession = document.getElementById('modal-session');
-const sessionFrame = document.getElementById('sessionFrame');
 const SS = { task: null, readonly: false }; // 弹层当前打开的任务 + 是否只读（已完成/逾期）
 
 // 轻提示 toast（底部居中，自动消失）
@@ -4907,19 +5198,31 @@ function applySessionBtnState(completed) {
   document.getElementById('ssDoneBadge').hidden = !completed;
 }
 
-// iframe 加载遮罩显隐
+// 对话区加载遮罩显隐
 function showSessionLoading(v) {
   document.getElementById('ssLoading').classList.toggle('is-hidden', !v);
 }
 
 // 打开会话弹层：
-// a) 任务有快照 → 先把快照写回 localStorage('dsh.sessions.current') 再加载 /harness/，dsh web 启动时即恢复到该任务的会话；
-// b) 无快照 → 直接加载 /harness/，由用户在其中选择工作区 / 新建会话；
-// c) options.readonly=true（已完成/逾期任务）→ iframe 底部覆盖半透明拦截条「会话已结束 · 仅可查看历史」；
+// a) 中栏为自研对话组件（不再 iframe 嵌入 dsh web）：ChatOpen 直连 harness 拉历史 + 订阅 WS 事件流；
+// b) 会话恢复/创建由 ensureHarnessSession 完成（任务专属目录 → workspace.create → session.create）；
+// c) options.readonly=true（已完成/逾期任务）→ 输入栏禁用 + 底部覆盖拦截条「会话已结束 · 仅可查看历史」；
 //    逾期任务拦截条右侧额外提供「设定新期限」按钮（renew 后解除拦截）
 // 任务是否以只读方式打开会话：已归档/已完成/逾期均锁定输入栏（不可与智能体交互）
 function taskReadOnly(task) {
   return !!(task && (task.archived || task.status === 'completed' || task.status === 'overdue'));
+}
+// 只读拦截条渲染：SS.readonly=false 时隐藏；否则显示并按任务状态给文案与「设定新期限」按钮
+// （openSessionModal 打开弹层与「完成会话」即时锁定两处共用）
+function applyReadonlyBar(task) {
+  const bar = document.getElementById('ssReadonlyBar');
+  if (!SS.readonly) { bar.hidden = true; return; }
+  bar.hidden = false;
+  // 逾期任务可设定新期限恢复会话；已完成任务仅提示可归档
+  document.getElementById('ssRenewBtn').hidden = task.status !== 'overdue';
+  document.getElementById('ssReadonlyHint').textContent = task.status === 'overdue'
+    ? '该任务已逾期，仅可查看历史会话；设定新期限后可恢复会话继续工作。'
+    : '该任务已完成，仅可查看历史会话；如需留存文件可点击右上角「文件归档」。';
 }
 function openSessionModal(task, options = {}) {
   if (!task) return;
@@ -4939,62 +5242,81 @@ function openSessionModal(task, options = {}) {
     `${ICON_CAL}<span>期限 ${esc(fmtDeadline(task).text)}</span>`;
   // 已完成任务直接呈现「文件归档」态（仅查看历史会话）
   applySessionBtnState(task.status === 'completed');
-  // 只读拦截条：覆盖 iframe 底部 150px，阻止在 dsh web 内继续交互收尾区域
-  const bar = document.getElementById('ssReadonlyBar');
-  if (SS.readonly) {
-    bar.hidden = false;
-    // 逾期任务可设定新期限恢复会话；已完成任务仅提示可归档
-    document.getElementById('ssRenewBtn').hidden = task.status !== 'overdue';
-    document.getElementById('ssReadonlyHint').textContent = task.status === 'overdue'
-      ? '该任务已逾期，仅可查看历史会话；设定新期限后可恢复会话继续工作。'
-      : '该任务已完成，仅可查看历史会话；如需留存文件可点击右上角「文件归档」。';
-  } else {
-    bar.hidden = true;
-  }
-  // 会话恢复/创建：有真实快照直接恢复；否则将任务工作区注册为 harness 工作区并真实创建会话（绑定真实 sessionId）
-  // 只读模式（已完成/逾期）仅查看历史，绝不新建会话
-  const restoreOrCreate = options.readonly
-    ? Promise.resolve(task.sessionSnapshot || null)
-    : ensureHarnessSession(task);
-  restoreOrCreate.then(snapshot => {
-    if (snapshot) {
-      try { localStorage.setItem('dsh.sessions.current', snapshot); } catch (e) { /* 存储异常时交给 dsh web 自行呈现 */ }
-    }
-    // 每次赋值 src 都会触发 iframe 重新导航，加载遮罩先行展示
-    // ?wb= 版本参数：强制绕过浏览器对旧版注入 HTML 的缓存（配合服务端 no-store 双保险）
-    // ?ro=1 只读模式：服务端向 iframe 注入输入栏封禁样式/脚本（已完成/逾期任务不可输入）
-    showSessionLoading(true);
-    sessionFrame.src = '/harness/?wb=20260820e' + (SS.readonly ? '&ro=1' : '');
-  });
+  // 只读拦截条：覆盖输入栏区域，阻止继续与智能体交互
+  applyReadonlyBar(task);
   showModal(modalSession);
   // 三栏工作台初始化：左栏（身份卡/文件树/统计）+ 右栏（上下文/书架）
   initSessionWorkbench(task);
+  // 中栏：自研对话组件（history 尾页 + WS 流式渲染 + 输入栏功能键）
+  ChatOpen(task, SS.readonly);
 }
 
 // 确保任务与 harness 会话真实绑定（spec：任务=智能体会话，会话在任务所属工作区文件夹上下文中运行）：
 //  - 任务已有真实快照（sessionId）→ 直接复用；
-//  - 无快照/快照无有效 id（如历史遗留的伪造值）→ 调 harness RPC：
-//      workspace.create(任务专属目录，幂等) → session.create(workspaceId，cwd=该目录)
+//  - 无快照/快照无有效 id（如历史遗留的伪造值）→ 依次执行：
+//      a. 无 task.dir → PATCH ensureDir 由服务端补齐运行目录；
+//      b. POST prepare-session 写 AGENTS.md/MEMORY.md（失败忽略，不阻塞）；
+//      c. workspace.create(任务专属目录，幂等) → session.create(workspaceId，cwd=该目录)
 //    拿到真实 sessionId 后回写任务（PATCH bindSession），任务随即派生为「进行中」。
 // 关键：用 task.dir 而非工作区根目录作为 workspace，避免 harness 读取同一工作区下其他任务的 AGENTS.md。
+// 返回值：快照字符串（成功）或 {error:{kind,message}}（失败分型：no-dir / offline / rpc）
 async function ensureHarnessSession(task) {
   const snap = task.sessionSnapshot;
   if (snap && extractSessionId(snap)) return snap;
-  try {
-    // 优先使用任务专属目录作为 harness workspace，实现会话边界隔离
-    let wsPath = task.dir || '';
-    let fallbackWs = null;
-    if (!wsPath) {
-      const ws = WB.workspaces.find(w => w.id === task.workspaceId);
-      if (!ws || !ws.path) return null; // 任务未绑定工作区：无法确定运行目录
-      wsPath = ws.path;
-      fallbackWs = ws;
+  // a) 无运行目录 → 服务端补齐（ensureDir）；仍无则明确报「缺目录」
+  if (!task.dir) {
+    try {
+      const updated = await fetchJson('/api/tasks/' + encodeURIComponent(task.id), {
+        method: 'PATCH',
+        body: JSON.stringify({ action: 'ensureDir' })
+      });
+      if (updated && updated.dir) task.dir = updated.dir;
+    } catch (e) {
+      console.warn('[DSH Work Buddy] ensureDir 失败:', e && e.message);
     }
-    const wr = await wbRpc('workspace.create', { path: wsPath }); // 幂等：已注册则返回既有工作区
+    if (!task.dir) return { error: { kind: 'no-dir', message: '任务缺少运行目录' } };
+  }
+  // b) 准备会话文件（AGENTS.md / MEMORY.md，可选更新 agentTemplate）；失败忽略，不阻塞建连
+  try {
+    await fetchJson('/api/tasks/' + encodeURIComponent(task.id) + '/prepare-session', {
+      method: 'POST',
+      body: JSON.stringify(task.agentTemplate ? { agentTemplate: task.agentTemplate } : {})
+    });
+  } catch (e) {
+    console.warn('[DSH Work Buddy] prepare-session 失败（忽略）:', e && e.message);
+  }
+  // c) 建 workspace + session；失败时先快速探测服务是否在线：
+  //    在线 → 立即重试一次并透传真实错误（健康后端绝不进入慢等待）；
+  //    离线 → waitHarnessReady 等待（期间网关会自动复活智能体）
+  try {
+    let wr;
+    try {
+      wr = await wbRpc('workspace.create', { path: task.dir }); // 幂等：已注册则返回既有工作区
+    } catch (e) {
+      let up = false;
+      try { await wbRpc('host.describe', {}); up = true; } catch (e2) { up = false; }
+      if (!up) {
+        // 服务确实不在：等待就绪（轮询期间网关触发自愈拉起）后重试一次
+        const ok = await waitHarnessReady();
+        if (!ok) return { error: { kind: 'offline', message: '智能体服务未就绪（已等待 30 秒）' } };
+        try {
+          wr = await wbRpc('workspace.create', { path: task.dir });
+        } catch (e2) {
+          return { error: { kind: 'offline', message: '智能体服务未就绪（已等待 30 秒）' } };
+        }
+      } else {
+        // 服务在线但 create 失败：多为参数/瞬时错误，立即重试一次；再失败则透传真实错误
+        try {
+          wr = await wbRpc('workspace.create', { path: task.dir });
+        } catch (e2) {
+          return { error: { kind: 'rpc', message: 'workspace.create 失败：' + ((e2 && e2.message) || (e && e.message) || 'RPC 调用失败') } };
+        }
+      }
+    }
     const workspaceId = wr && wr.workspace && wr.workspace.workspaceId;
-    if (!workspaceId) return null;
+    if (!workspaceId) return { error: { kind: 'rpc', message: 'workspace.create 未返回 workspaceId' } };
     const sr = await wbRpc('session.create', { workspaceId });      // cwd = workspace.path
-    if (!sr.sessionId) return null;
+    if (!sr.sessionId) return { error: { kind: 'rpc', message: 'session.create 未返回 sessionId' } };
     const snapshot = JSON.stringify({ sessionId: sr.sessionId, v: 1 });
     task.sessionSnapshot = snapshot; // 本地同步，避免重复创建
     task.sessionId = sr.sessionId;
@@ -5006,9 +5328,1412 @@ async function ensureHarnessSession(task) {
     return snapshot;
   } catch (e) {
     console.warn('[DSH Work Buddy] 创建 harness 会话失败（dsh web 未启动或 RPC 异常）:', e && e.message);
+    return { error: { kind: 'rpc', message: (e && e.message) || 'RPC 调用失败' } };
+  }
+}
+
+// 等待 dsh 智能体服务就绪：轮询 host.describe，成功即返回 true，超时返回 false
+// 节奏：先 3 次快探测（500ms）捕捉「即将就绪」，随后 2s 常规间隔；文案带进度
+async function waitHarnessReady(timeoutMs = 30000, interval = 2000) {
+  const tip = document.querySelector('#ssLoading div:not(.spinner)');
+  const orig = tip ? tip.textContent : null;
+  const start = Date.now();
+  let attempt = 0;
+  try {
+    while (Date.now() - start < timeoutMs) {
+      attempt++;
+      try {
+        await wbRpc('host.describe', {});
+        return true;
+      } catch (e) { /* 未就绪：间隔后重试 */ }
+      if (tip) tip.textContent = `正在等待智能体服务启动…（已等待 ${Math.round((Date.now() - start) / 1000)}s，第 ${attempt} 次探测）`;
+      const wait = attempt <= 3 ? 500 : interval; // 前几次快探测，缩短「即将就绪」场景的感知延迟
+      await new Promise(r => setTimeout(r, wait));
+    }
+    return false;
+  } finally {
+    if (tip && orig != null) tip.textContent = orig;
+  }
+}
+
+// ======================================================================
+// 自研对话组件：中栏直连 dsh harness（session.* RPC + /api/events.mux WS 事件流）
+// —— 替代原 iframe 嵌入（dsh 自带 web 界面），仅保留消息流 + 输入栏核心功能键
+// 协议要点（步骤0实测 + apiproxy 契约确认）：
+//  1) WS 帧封装 {type:'server-request',rpcId,method:'<帧类型>',payload:<MuxFrame>}；
+//     WS 为下行专用（客户端向其发消息属协议违规），审批/提问回执走 POST /api/respond
+//  2) session/event 的 event = {type,seq,time,data}；assistant/chunk 的 chunk.type =
+//     block-start | text-delta | reasoning-delta | tool-call-delta | block-end | usage | finish
+//  3) 以 "Current runtime context" 开头的 user/message 是注入上下文，过滤不渲染
+//  4) session.prompt 的信封 rpcId 会随 user/message 事件回传（source.rpcId），
+//     用于乐观渲染气泡与事件流的对齐去重
+// ======================================================================
+const CHAT = {
+  sessionId: null,          // 当前渲染的会话 id
+  task: null,
+  readonly: false,
+  running: false,           // turn 进行中（turn/start 后未收到 turn/end）
+  stream: null,             // 流式态 {turn, step, msgEl, bubble, blocks:Map<index,{kind,root,textEl,text}>, caret}
+  toolCards: new Map(),     // callId → 工具卡 DOM（tool/call 与 tool/result 双向对齐）
+  pendingRpcIds: new Map(), // 信封 rpcId → 乐观用户气泡 DOM
+  cmdNotes: new Map(),      // command/run 事件 seq → 命令提示卡（command/done 按 sourceEventSeq 回填）
+  hasMore: false,
+  oldestSeq: null,
+  loadmoreEl: null,
+  skills: null,             // 斜杠命令菜单技能缓存（skill.list）
+  cmdCatalog: null,         // 斜杠命令动态目录（commands/list，null=未加载/失败）
+  models: null,             // session.models 缓存
+  queue: [],                // session/queue 快照（排队/转向消息）
+  composing: false,         // IME 组合输入守卫
+  nearBottom: true,         // 是否贴底（自动滚底判定）
+  menuItems: [],            // 斜杠命令菜单当前条目
+  menuIdx: -1,
+  folding: false,           // 历史折叠渲染中（turn 状态机跳过，避免旧页覆盖运行态）
+  loadingHistory: false,
+  loadingOlder: false,
+  prependMode: false,       // 加载更早消息时倒序前插
+  subscribed: false,        // 会话已建立实时基线（重连对齐用）
+  openToken: 0,             // 打开令牌：关闭/切换弹窗后使旧异步失效
+  presets: null,            // 工作模式清单（agentPreset.list，null=未加载）
+  preset: null,             // 当前会话工作模式 id（standard / code / minimal / cordis…）
+  hasTurn: false,           // 会话已开始对话（存在 turn/真实消息）：此后不可切换工作模式
+  imageLimits: null,        // 图片附件限制投影（history projections.values.imageLimits）
+  perms: null,              // 权限级别投影（projections.values.permissions = {options,currentValue}）
+  attach: [],               // 待发送图片附件 [{name,mediaType,data,size}]
+  sscPopKind: 'model',      // 弹层内容：'model' 模型选择 | 'mode' 工作模式选择 | 'perm' 权限级别选择
+};
+
+// ---------- WS 事件流管理器（全局单例，按 sessionId 分发到当前会话渲染器） ----------
+const WB_WS = {
+  ws: null,
+  state: 'idle',            // idle | connecting | open
+  backoff: 800,
+  want: false,              // 有会话打开时保持连接并自动重连
+  _rt: null,
+  ensure() {
+    this.want = true;
+    clearTimeout(this._rt);
+    this.connect();
+  },
+  release() {               // 弹窗关闭：停止重连，连接保留复用
+    this.want = false;
+    clearTimeout(this._rt);
+  },
+  connect() {
+    if (this.state !== 'idle') return;
+    this.state = 'connecting';
+    let ws = null;
+    try {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}/api/events.mux`);
+    } catch (e) {
+      this.state = 'idle';
+      this.scheduleReconnect();
+      return;
+    }
+    this.ws = ws;
+    ws.onopen = () => {
+      this.state = 'open';
+      this.backoff = 800;
+      // 契约：重连 = 重开流 + 重拉 history；打开期间已有实时基线则全量对齐
+      if (CHAT.sessionId && CHAT.subscribed) chatReloadHistory();
+    };
+    ws.onmessage = (ev) => {
+      let frame = null;
+      try { frame = JSON.parse(ev.data); } catch (e) { return; }
+      WB_WS.dispatch(frame);
+    };
+    ws.onclose = () => {
+      if (this.ws === ws) { this.ws = null; this.state = 'idle'; }
+      this.scheduleReconnect();
+    };
+    ws.onerror = () => { /* onclose 随后触发 */ };
+  },
+  scheduleReconnect() {
+    if (!this.want || this.state !== 'idle') return;
+    const wait = this.backoff;
+    this.backoff = Math.min(this.backoff * 2, 15000);
+    clearTimeout(this._rt);
+    this._rt = setTimeout(() => this.connect(), wait);
+  },
+  dispatch(frame) {
+    if (!frame || frame.type !== 'server-request' || !frame.payload) return;
+    const p = frame.payload;
+    const active = !!(CHAT.sessionId && p.sessionId === CHAT.sessionId);
+    switch (p.type) {
+      case 'session/event':
+        if (active) chatOnEvent(p.event, p.view);
+        break;
+      case 'session/queue':
+        if (active) { CHAT.queue = p.items || []; renderSscChips(); }
+        break;
+      case 'approval/requested':
+        if (active) chatOnApprovalRequested(frame.rpcId, p);
+        break;
+      case 'approval/resolved':
+        if (active) chatOnApprovalResolved(p);
+        break;
+      case 'question/requested':
+        if (active) chatOnQuestionRequested(frame.rpcId, p);
+        break;
+      case 'question/resolved':
+        if (active) chatOnQuestionResolved(p);
+        break;
+      case 'stream/error':
+        toast('事件流错误：' + ((p.error && p.error.message) || '未知错误'));
+        break;
+    }
+  },
+};
+
+// ---------- DOM / 渲染基础 ----------
+function chatEl(html) {
+  const t = document.createElement('template');
+  t.innerHTML = html.trim();
+  return t.content.firstChild;
+}
+
+function chatAppend(el) {
+  if (!el) return;
+  const list = document.getElementById('ssChatList');
+  const empty = list.querySelector('.ss-empty');
+  if (empty) empty.remove();
+  if (CHAT.prependMode) {
+    if (CHAT.loadmoreEl && CHAT.loadmoreEl.parentNode === list) list.insertBefore(el, CHAT.loadmoreEl.nextSibling);
+    else list.insertBefore(el, list.firstChild);
+  } else {
+    list.appendChild(el);
+    chatScrollIfNear();
+  }
+}
+
+function chatScrollIfNear(force) {
+  if (!force && !CHAT.nearBottom) return;
+  requestAnimationFrame(() => {
+    const sc = document.getElementById('ssChatScroll');
+    sc.scrollTop = sc.scrollHeight;
+  });
+}
+
+function chatShowEmpty(title, sub) {
+  document.getElementById('ssChatList').innerHTML =
+    `<div class="ss-empty"><div>${esc(title)}</div>${sub ? `<div style="font-size:11.5px;color:var(--text-5)">${esc(sub)}</div>` : ''}</div>`;
+}
+
+// 会话打开失败的分型渲染（no-dir / offline / rpc）：
+// no-dir → 提示重建任务或选择工作区；offline / rpc → 附「重试」按钮重新打开会话
+function chatShowOpenError(err) {
+  const kind = (err && err.kind) || 'rpc';
+  const msg = (err && err.message) || '';
+  let title, sub, ph;
+  if (kind === 'no-dir') {
+    title = '任务缺少运行目录';
+    sub = '请重建任务或选择工作区';
+    ph = '任务缺少运行目录，无法连接智能体';
+  } else if (kind === 'offline') {
+    title = '智能体服务未就绪（已等待 30 秒）';
+    sub = '请确认 dsh 智能体服务已启动后重试';
+    ph = '智能体服务未就绪，暂时无法发送消息';
+  } else {
+    title = 'RPC 调用失败';
+    sub = msg || 'dsh 智能体服务 RPC 调用异常';
+    ph = 'RPC 调用失败，暂时无法发送消息';
+  }
+  document.getElementById('ssChatList').innerHTML =
+    `<div class="ss-empty"><div>${esc(title)}</div>`
+    + (sub ? `<div style="font-size:11.5px;color:var(--text-5)">${esc(sub)}</div>` : '')
+    + (kind !== 'no-dir' ? `<button class="btn btn-primary" id="ssRetryBtn" style="margin-top:12px">重试</button>` : '')
+    + `</div>`;
+  const btn = document.getElementById('ssRetryBtn');
+  if (btn) btn.onclick = () => { if (CHAT.task) openSessionModal(CHAT.task, { readonly: CHAT.readonly }); };
+  // 输入守卫：失败期间禁用输入，placeholder 提示失败原因摘要
+  const inp = document.getElementById('sscInput');
+  if (inp) { inp.disabled = true; inp.placeholder = ph; }
+}
+
+// 轻量 markdown 渲染（无依赖）：HTML 转义先行 → 围栏代码 / 行内代码 / 粗体 / 标题 / 引用 / 链接 / 换行
+function chatMd(raw) {
+  const src = String(raw == null ? '' : raw);
+  const out = [];
+  const parts = src.split('```');
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) {
+      let code = parts[i];
+      const nl = code.indexOf('\n');
+      // 首行为语言标记时剥除
+      if (nl > -1 && code.slice(0, nl).trim() && !/\s/.test(code.slice(0, nl))) code = code.slice(nl + 1);
+      out.push(`<pre><code>${esc(code.replace(/\n$/, ''))}</code></pre>`);
+    } else if (parts[i]) {
+      let t = esc(parts[i]);
+      t = t.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+      t = t.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+      t = t.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+      t = t.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+      t = t.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+      t = t.replace(/^&gt;\s?(.+)$/gm, '<blockquote>$1</blockquote>');
+      t = t.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+      out.push(`<p>${t.replace(/\n/g, '<br>')}</p>`);
+    }
+  }
+  return out.join('');
+}
+
+function chatModelLabel() {
+  const c = CHAT.models && CHAT.models.current;
+  return (c && c.model) || '';
+}
+
+// ---------- 消息渲染 ----------
+// 用户气泡：文本 + 图片（有 data 的渲染真实缩略图；事件回流的 image 块可能无 data，保留占位）
+function chatRenderUser(d, optimistic) {
+  const blocks = d.content || [];
+  const texts = blocks.filter(b => b && b.type === 'text').map(b => b.text || '');
+  const imgs = blocks.filter(b => b && b.type === 'image');
+  const withData = imgs.filter(b => b.data);
+  const noDataCnt = imgs.length - withData.length;
+  let body = esc(texts.join('\n'));
+  if (withData.length) {
+    body += withData.map(b =>
+      `<img src="data:${esc(b.mediaType || 'image/png')};base64,${b.data}" alt="${esc(b.name || '图片附件')}" style="max-width:220px;max-height:160px;object-fit:cover;border-radius:8px;display:block;margin-top:6px">`
+    ).join('');
+  }
+  if (noDataCnt) body += (texts.length || withData.length ? '<br>' : '') + '[图片附件]';
+  return chatEl(`<div class="ss-msg user${optimistic ? ' pending' : ''}">
+    <div class="ss-role">我</div>
+    <div class="ss-bubble">${body}</div>
+  </div>`);
+}
+
+function chatRenderAssistant(msg) {
+  return chatEl(`<div class="ss-msg asst">
+    <div class="ss-role">DeepSeek${chatModelLabel() ? `<span class="ss-model">${esc(chatModelLabel())}</span>` : ''}</div>
+    <div class="ss-bubble ss-md">${chatBlocksHtml(msg && msg.content)}</div>
+  </div>`);
+}
+
+// content blocks → HTML（tool-call 块不在此渲染：由 tool/call 事件独立成卡，避免重复）
+function chatBlocksHtml(content) {
+  const html = [];
+  for (const b of content || []) {
+    if (!b) continue;
+    if (b.type === 'text' && b.text) html.push(chatMd(b.text));
+    else if (b.type === 'reasoning' && b.text) {
+      html.push(`<details class="ss-reason"><summary>思考过程</summary><div class="ss-reason-body">${esc(b.text)}</div></details>`);
+    }
+  }
+  return html.join('') || '<p style="color:var(--text-5)">（本条消息仅含工具调用）</p>';
+}
+
+function chatNoteEl(txt, err) {
+  return chatEl(`<div class="ss-note${err ? ' err' : ''}"><span class="ss-note-ico">${err ? '✕' : '›'}</span><div>${txt}</div></div>`);
+}
+
+// ---------- 会话事件分发（历史折叠与实时流共用同一渲染器） ----------
+function chatOnEvent(ev, view) {
+  if (!ev || !CHAT.sessionId) return;
+  if (ev.seq != null && (CHAT.oldestSeq == null || ev.seq < CHAT.oldestSeq)) CHAT.oldestSeq = ev.seq;
+  const d = ev.data || {};
+  switch (ev.type) {
+    case 'user/message': chatEvUserMessage(d); break;
+    case 'assistant/chunk': chatEvChunk(d); break;
+    case 'assistant/message': chatEvAssistantMessage(d); break;
+    case 'tool/call': chatEvToolCall(d); break;
+    case 'tool/result': chatEvToolResult(d); break;
+    case 'turn/start':
+      if (!CHAT.folding) { CHAT.running = true; sscUpdateButtons(); renderSscChips(); }
+      break;
+    case 'turn/end':
+      chatEvTurnEnd(d);
+      if (!CHAT.folding) { CHAT.running = false; sscUpdateButtons(); renderSscChips(); }
+      break;
+    case 'command/run': {
+      const note = chatNoteEl(`执行命令 <b>/${esc(String(d.name || ''))}</b>${d.args ? ` <span style="color:var(--text-5)">${esc(String(d.args))}</span>` : ''}`, false);
+      CHAT.cmdNotes.set(ev.seq, note);
+      chatAppend(note);
+      break;
+    }
+    case 'command/done': {
+      const ok = d.kind !== 'error';
+      const txt = `命令${ok ? '完成' : '失败'}${d.text ? `：${esc(String(d.text))}` : ''}`;
+      const note = (d.sourceEventSeq != null && CHAT.cmdNotes.get(d.sourceEventSeq)) || null;
+      if (note && note.isConnected) {
+        note.querySelector('div').innerHTML = txt;
+        note.classList.toggle('err', !ok);
+        CHAT.cmdNotes.delete(d.sourceEventSeq);
+      } else {
+        chatAppend(chatNoteEl(txt, !ok));
+      }
+      break;
+    }
+    case 'compaction/start': chatAppend(chatNoteEl('上下文压缩开始…', false)); break;
+    case 'compaction/end': chatAppend(chatNoteEl('上下文压缩完成', false)); break;
+    case 'llm/retry': chatAppend(chatNoteEl(`模型请求重试${d.reason ? '：' + esc(String(d.reason)) : ''}`, false)); break;
+    case 'permission/preset':
+      // 权限预设切换：更新投影 currentValue 并重绘 chip
+      if (CHAT.perms && d.preset) { CHAT.perms.currentValue = d.preset; renderSscChips(); }
+      break;
+    case 'sandbox/mode':
+    case 'approval/policy':
+      // 沙箱/审批策略变化：组合可能脱离预设，保守置为 custom 再由投影重拉校正
+      if (CHAT.perms) { CHAT.perms.currentValue = 'custom'; renderSscChips(); }
+      break;
+    default: break; // session/title、step/*、request/*、todo/write、plan/mode 等不渲染
+  }
+}
+
+function chatEvUserMessage(d) {
+  const src = d.source || {};
+  const blocks = d.content || [];
+  const texts = blocks.filter(b => b && b.type === 'text').map(b => b.text || '');
+  // 注入的 runtime context：过滤不渲染
+  if (texts.length && texts[0].startsWith('Current runtime context')) return;
+  // 乐观回执对齐：信封 rpcId 命中 → 去除 pending 态，不重复渲染
+  if (src.rpcId && CHAT.pendingRpcIds.has(src.rpcId)) {
+    const el = CHAT.pendingRpcIds.get(src.rpcId);
+    CHAT.pendingRpcIds.delete(src.rpcId);
+    el.classList.remove('pending');
+    return;
+  }
+  // 插件注入的上下文（文件变更通知等）：淡提示卡，长文截断
+  if (src.kind && src.kind !== 'user') {
+    const t = texts.join('\n');
+    if (t) {
+      const short = t.length > 160 ? t.slice(0, 160) + '…' : t;
+      chatAppend(chatNoteEl(`<span title="${esc(t)}">${esc(short)}</span>`, false));
+    }
+    return;
+  }
+  chatAppend(chatRenderUser(d, false));
+}
+
+function chatEvChunk(d) {
+  const c = d.chunk || {};
+  if (!CHAT.stream || CHAT.stream.turn !== d.turn || CHAT.stream.step !== d.step) {
+    if (CHAT.stream) chatFinalizeStream();
+    CHAT.stream = { turn: d.turn, step: d.step, msgEl: null, bubble: null, blocks: new Map(), caret: null };
+  }
+  const s = CHAT.stream;
+  if (c.type === 'block-start') {
+    if (c.blockType !== 'text' && c.blockType !== 'reasoning') return; // tool-call 块在 block-end 落卡
+    if (!s.msgEl) {
+      s.msgEl = chatEl(`<div class="ss-msg asst"><div class="ss-role">DeepSeek${chatModelLabel() ? `<span class="ss-model">${esc(chatModelLabel())}</span>` : ''}</div><div class="ss-bubble ss-md"></div></div>`);
+      s.bubble = s.msgEl.querySelector('.ss-bubble');
+      chatAppend(s.msgEl);
+    }
+    if (s.blocks.has(c.index)) return;
+    let el;
+    if (c.blockType === 'reasoning') {
+      el = chatEl('<details class="ss-reason" open><summary>思考过程</summary><div class="ss-reason-body"></div></details>');
+      s.blocks.set(c.index, { kind: 'reasoning', root: el, textEl: el.querySelector('.ss-reason-body'), text: '' });
+    } else {
+      el = document.createElement('div');
+      el.style.whiteSpace = 'pre-wrap';
+      s.blocks.set(c.index, { kind: 'text', root: el, textEl: el, text: '' });
+    }
+    s.bubble.appendChild(el);
+  } else if (c.type === 'text-delta' || c.type === 'reasoning-delta') {
+    const b = s.blocks.get(c.index);
+    if (!b) return;
+    b.text += c.text || '';
+    b.textEl.textContent = b.text;
+    chatStreamTouch(s);
+  } else if (c.type === 'block-end' && c.block && c.block.type === 'tool-call') {
+    chatEvToolCall({ callId: c.block.id, name: c.block.name, arguments: c.block.arguments });
+  }
+  // usage / finish / tool-call-delta：不渲染
+}
+
+// 流式气泡尾部光标（保持贴底）
+function chatStreamTouch(s) {
+  if (!s.bubble) return;
+  if (!s.caret) s.caret = chatEl('<span class="ss-caret"></span>');
+  s.bubble.appendChild(s.caret);
+  chatScrollIfNear();
+}
+
+function chatFinalizeStream() {
+  const s = CHAT.stream;
+  if (!s) return;
+  CHAT.stream = null;
+  if (s.caret && s.caret.parentNode) s.caret.remove();
+  for (const b of s.blocks.values()) {
+    if (b.kind === 'text' && b.text) {
+      // 无 assistant/message 兜底（如中断）：累计文本按 markdown 落定
+      const holder = document.createElement('div');
+      holder.innerHTML = chatMd(b.text);
+      b.root.replaceWith(holder);
+    }
+  }
+}
+
+function chatEvAssistantMessage(d) {
+  if (CHAT.stream) {
+    if (CHAT.stream.turn === d.turn && CHAT.stream.step === d.step) {
+      if (CHAT.stream.msgEl) CHAT.stream.msgEl.remove();
+      CHAT.stream = null;
+    } else {
+      chatFinalizeStream();
+    }
+  }
+  chatAppend(chatRenderAssistant(d.message));
+}
+
+// ---------- 工具调用卡片 ----------
+function chatPrettyJson(raw) {
+  try { return JSON.stringify(JSON.parse(raw), null, 2); } catch (e) { return String(raw || ''); }
+}
+
+function chatToolSummary(raw) {
+  let s = String(raw || '');
+  try {
+    const o = JSON.parse(s);
+    const vals = [];
+    for (const k of Object.keys(o).slice(0, 3)) {
+      const v = o[k];
+      vals.push(typeof v === 'string' ? v : JSON.stringify(v));
+    }
+    s = vals.join(' ') || s;
+  } catch (e) { /* 非 JSON 原样 */ }
+  return s.length > 80 ? s.slice(0, 80) + '…' : s;
+}
+
+function chatToolCard(name, argRaw, state) {
+  const st = state === 'err' ? '<span class="ss-tool-state err">失败</span>'
+    : state === 'ok' ? '<span class="ss-tool-state ok">完成</span>'
+      : '<span class="ss-tool-state run">运行中</span>';
+  return chatEl(`<details class="ss-tool${state === 'err' ? ' is-err' : ''}">
+    <summary><span class="ss-tool-name">${esc(name || 'tool')}</span><span class="ss-tool-arg">${esc(chatToolSummary(argRaw))}</span>${st}</summary>
+    <div class="ss-tool-body"><pre>${esc(chatPrettyJson(argRaw))}</pre></div>
+  </details>`);
+}
+
+function chatEvToolCall(d) {
+  if (!d.callId) return;
+  let card = CHAT.toolCards.get(d.callId);
+  if (!card) {
+    card = chatToolCard(d.name, d.arguments, 'run');
+    CHAT.toolCards.set(d.callId, card);
+    chatAppend(card);
+  } else if (d.name) {
+    // 反向序（历史前插）：result 先到，此处补名称
+    const n = card.querySelector('.ss-tool-name');
+    if (n && (!n.textContent || n.textContent === 'tool')) n.textContent = d.name;
+  }
+}
+
+function chatEvToolResult(d) {
+  const msg = d.message || {};
+  const callId = msg.toolCallId;
+  const isErr = !!(msg.isError || d.error);
+  let card = callId ? CHAT.toolCards.get(callId) : null;
+  if (!card) {
+    card = chatToolCard('', '', isErr ? 'err' : 'ok');
+    if (callId) CHAT.toolCards.set(callId, card);
+    chatAppend(card);
+  } else {
+    const st = card.querySelector('.ss-tool-state');
+    if (st) {
+      st.className = 'ss-tool-state ' + (isErr ? 'err' : 'ok');
+      st.textContent = isErr ? '失败' : '完成';
+    }
+    card.classList.toggle('is-err', isErr);
+  }
+  const txts = (msg.content || []).filter(b => b && b.type === 'text').map(b => b.text || '');
+  let body = txts.join('\n') || JSON.stringify(msg.content || [], null, 2);
+  if (body.length > 4000) body = body.slice(0, 4000) + '\n…（已截断）';
+  const bodyEl = card.querySelector('.ss-tool-body');
+  if (bodyEl) bodyEl.innerHTML = `<pre>${esc(body)}</pre>`;
+}
+
+function chatEvTurnEnd(d) {
+  chatFinalizeStream();
+  const r = d.reason || {};
+  if (r.kind === 'error') {
+    chatAppend(chatNoteEl(`本回合失败：${esc((r.error && r.error.message) || '未知错误')}`, true));
+  } else if (r.kind === 'aborted') {
+    chatAppend(chatNoteEl('已停止生成', false));
+  } else if (r.kind === 'blocked') {
+    chatAppend(chatNoteEl('回合被阻断（等待批准或输入）', false));
+  } else if (r.kind === 'max-tokens') {
+    chatAppend(chatNoteEl('已达到单步输出上限', false));
+  } else if (r.kind === 'interrupted') {
+    chatAppend(chatNoteEl('回合被中断（服务重启）', false));
+  }
+}
+
+// ---------- 审批 / 提问（answerable 帧 → POST /api/respond 回执） ----------
+async function chatRespond(rpcId, value, cardEl) {
+  try {
+    const r = await fetch('/api/respond', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'client-response', rpcId, result: { ok: true, value } })
+    });
+    const receipt = await r.json();
+    if (!receipt || !receipt.accepted) throw new Error('该请求已处理或已失效');
+    if (cardEl) cardEl.classList.add('resolved');
+  } catch (e) {
+    toast('提交失败：' + e.message);
+  }
+}
+
+function chatOnApprovalRequested(rpcId, p) {
+  const btns = CHAT.readonly ? '' : `<div class="ss-ask-btns">
+      <button class="deny">拒绝</button><button class="allow">允许一次</button></div>`;
+  const el = chatEl(`<div class="ss-ask" data-approval="${esc(p.approvalId)}">
+    <div class="ss-ask-title">请求批准：${esc(p.toolName || '工具调用')}</div>
+    ${p.reason ? `<div class="ss-ask-sub">${esc(p.reason)}</div>` : ''}
+    ${btns}</div>`);
+  const allow = el.querySelector('.allow');
+  const deny = el.querySelector('.deny');
+  if (allow) allow.addEventListener('click', () => chatRespond(rpcId, { sessionId: p.sessionId, approvalId: p.approvalId, outcome: 'allowed-once' }, el));
+  if (deny) deny.addEventListener('click', () => chatRespond(rpcId, { sessionId: p.sessionId, approvalId: p.approvalId, outcome: 'rejected' }, el));
+  chatAppend(el);
+}
+
+function chatOnApprovalResolved(p) {
+  const card = document.querySelector(`.ss-ask[data-approval="${CSS.escape(p.approvalId)}"]`);
+  if (!card) return;
+  card.classList.add('resolved');
+  const t = card.querySelector('.ss-ask-title');
+  if (t) t.textContent += `（已${p.outcome === 'allowed-once' ? '允许' : p.outcome === 'rejected' ? '拒绝' : p.outcome}）`;
+}
+
+function chatOnQuestionRequested(rpcId, p) {
+  const qs = p.questions || [];
+  if (!qs.length) return;
+  const isPlan = qs.length === 1 && qs[0].intent && qs[0].intent.kind === 'plan-review';
+  const optsHtml = qs.map(q => `<div style="display:flex;flex-direction:column;gap:7px">
+      <div class="ss-ask-sub"><strong>${esc(q.header ? q.header + '：' : '')}${esc(q.question)}</strong>
+        ${q.detail ? (isPlan ? `<div class="ss-md" style="margin-top:6px">${chatMd(q.detail)}</div>` : `<div style="margin-top:2px">${esc(q.detail)}</div>`) : ''}</div>
+      ${(q.options || []).map(o => `<label class="ss-ask-opt">
+          <input type="${q.multiSelect ? 'checkbox' : 'radio'}" name="ssq_${esc(q.id)}" value="${esc(o.label)}">
+          <span class="ss-ask-opt-txt">${esc(o.label)}${o.description ? `<span class="ss-ask-opt-desc">${esc(o.description)}</span>` : ''}</span>
+        </label>`).join('')}
+      ${!(q.options || []).length ? `<input type="text" data-custom="${esc(q.id)}" placeholder="输入回答…"
+          style="background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:9px;padding:8px 10px;color:var(--text-1);font-size:12.5px;outline:none">` : ''}
+    </div>`).join('');
+  const btns = CHAT.readonly ? '' : `<div class="ss-ask-btns"><button class="allow">提交回答</button></div>`;
+  const el = chatEl(`<div class="ss-ask" data-qrpc="${esc(rpcId)}">
+    <div class="ss-ask-title">${isPlan ? '计划审批' : '智能体提问'}</div>
+    <div class="ss-ask-opts">${optsHtml}</div>${btns}</div>`);
+  const submit = el.querySelector('.allow');
+  if (submit) submit.addEventListener('click', () => {
+    const answers = qs.map(q => {
+      const selected = Array.from(el.querySelectorAll(`input[name="ssq_${CSS.escape(q.id)}"]:checked`)).map(i => i.value);
+      const ci = el.querySelector(`input[data-custom="${CSS.escape(q.id)}"]`);
+      const custom = ci && ci.value.trim() ? ci.value.trim() : undefined;
+      return { id: q.id, selected, ...(custom ? { custom } : {}) };
+    });
+    if (answers.some(a => !a.selected.length && !a.custom)) { toast('请先选择或输入回答'); return; }
+    chatRespond(rpcId, { sessionId: p.sessionId, answer: { answers } }, el);
+  });
+  chatAppend(el);
+}
+
+function chatOnQuestionResolved(p) {
+  const card = document.querySelector(`.ss-ask[data-qrpc="${CSS.escape(p.questionRpcId)}"]`);
+  if (card) card.classList.add('resolved');
+}
+
+// ---------- 历史加载（打开弹窗 / 重连对齐 / 加载更早） ----------
+async function chatLoadHistory() {
+  if (!CHAT.sessionId || CHAT.loadingHistory) return;
+  const token = CHAT.openToken;
+  CHAT.loadingHistory = true;
+  try {
+    let v = null;
+    try {
+      v = await wbRpc('session.history', { sessionId: CHAT.sessionId, maxMessages: 50 });
+    } catch (e) {
+      // 智能体冷启动预热：服务刚拉起时冷会话首读可能暂未就绪（not found），
+      // 等待 1.5s 重试一次；仍失败才走下方错误分支
+      await new Promise(r => setTimeout(r, 1500));
+      if (CHAT.openToken !== token) return;
+      v = await wbRpc('session.history', { sessionId: CHAT.sessionId, maxMessages: 50 });
+    }
+    if (CHAT.openToken !== token) return;
+    CHAT.loadingHistory = false;
+    const list = document.getElementById('ssChatList');
+    list.innerHTML = '';
+    CHAT.loadmoreEl = null;
+    CHAT.toolCards = new Map();
+    CHAT.pendingRpcIds = new Map();
+    CHAT.cmdNotes = new Map();
+    CHAT.stream = null;
+    CHAT.oldestSeq = null;
+    CHAT.hasMore = Boolean(v.hasMore);
+    // 图片附件限制投影（projections.values.imageLimits，无则保持 null 不做预检）
+    CHAT.imageLimits = (v.projections && v.projections.values && v.projections.values.imageLimits) || null;
+    // 权限级别投影（projections.values.permissions = {options,currentValue}，无则 null → chip 显示 '…'）
+    CHAT.perms = (v.projections && v.projections.values && v.projections.values.permissions) || null;
+    CHAT.folding = true;
+    let running = false;
+    // 会话是否已开始对话：存在 turn/start、assistant/message 或真实 user/message
+    // （以 "Current runtime context" 开头的注入上下文不算）
+    CHAT.hasTurn = (v.events || []).some(ent => {
+      const et = ent.event && ent.event.type;
+      if (et === 'turn/start' || et === 'assistant/message') return true;
+      if (et === 'user/message') {
+        const texts = (((ent.event.data || {}).content) || [])
+          .filter(b => b && b.type === 'text').map(b => b.text || '');
+        if (texts.length && texts[0].startsWith('Current runtime context')) return false;
+        return true;
+      }
+      return false;
+    });
+    for (const ent of (v.events || [])) {
+      chatOnEvent(ent.event, ent.view);
+      if (ent.event.type === 'turn/start') running = true;
+      else if (ent.event.type === 'turn/end') running = false;
+    }
+    CHAT.folding = false;
+    CHAT.running = running;
+    CHAT.subscribed = true;
+    if (CHAT.hasMore && CHAT.oldestSeq != null) {
+      const bar = chatEl('<div class="ss-loadmore"><button>加载更早消息</button></div>');
+      bar.querySelector('button').addEventListener('click', chatLoadOlder);
+      CHAT.loadmoreEl = bar;
+      list.insertBefore(bar, list.firstChild);
+    }
+    sscUpdateButtons();
+    renderSscChips();
+    if (!list.children.length) chatShowEmpty('开始与智能体对话吧', '输入消息，或输入 / 唤起命令菜单');
+    chatScrollIfNear(true);
+  } catch (e) {
+    CHAT.loadingHistory = false;
+    CHAT.folding = false;
+    if (CHAT.openToken !== token) return;
+    showSessionLoading(false);
+    document.getElementById('ssChatList').innerHTML = '';
+    chatAppend(chatNoteEl(`历史加载失败：${esc(e.message)}`, true));
+  }
+}
+
+async function chatReloadHistory() {
+  // 重连对齐：全量重拉尾页（含未完成消息的 chunk）；挂起的审批/提问由 WS 打开时的基线帧重放
+  CHAT.loadingHistory = false;
+  await chatLoadHistory();
+}
+
+async function chatLoadOlder() {
+  if (!CHAT.sessionId || !CHAT.hasMore || CHAT.loadingOlder || CHAT.oldestSeq == null) return;
+  const token = CHAT.openToken;
+  CHAT.loadingOlder = true;
+  const btn = CHAT.loadmoreEl && CHAT.loadmoreEl.querySelector('button');
+  if (btn) { btn.disabled = true; btn.textContent = '加载中...'; }
+  const sc = document.getElementById('ssChatScroll');
+  const prevHeight = sc.scrollHeight;
+  try {
+    const v = await wbRpc('session.history', { sessionId: CHAT.sessionId, beforeSeq: CHAT.oldestSeq, maxMessages: 50 });
+    if (CHAT.openToken !== token) return;
+    CHAT.hasMore = Boolean(v.hasMore);
+    const evs = v.events || [];
+    CHAT.prependMode = true;
+    CHAT.folding = true;
+    for (let i = evs.length - 1; i >= 0; i--) chatOnEvent(evs[i].event, evs[i].view);
+    CHAT.folding = false;
+    CHAT.prependMode = false;
+    // 保持视口锚定在原消息位置
+    sc.scrollTop += sc.scrollHeight - prevHeight;
+    if (!CHAT.hasMore && CHAT.loadmoreEl) {
+      CHAT.loadmoreEl.remove();
+      CHAT.loadmoreEl = null;
+    } else if (btn) {
+      btn.disabled = false;
+      btn.textContent = '加载更早消息';
+    }
+  } catch (e) {
+    CHAT.folding = false;
+    CHAT.prependMode = false;
+    if (btn) { btn.disabled = false; btn.textContent = '加载更早消息'; }
+    toast('加载失败：' + e.message);
+  } finally {
+    CHAT.loadingOlder = false;
+  }
+}
+
+// ---------- 输入栏：发送 / 停止 / 斜杠命令 / 模型选择 / 队列 ----------
+function sscUpdateButtons() {
+  const running = CHAT.running && !CHAT.readonly;
+  document.getElementById('sscSendBtn').hidden = running;
+  document.getElementById('sscStopBtn').hidden = !running;
+}
+
+function sscAutoGrow() {
+  const t = document.getElementById('sscInput');
+  t.style.height = 'auto';
+  t.style.height = Math.min(t.scrollHeight, 160) + 'px';
+}
+
+// 通过网关 commands/execute 执行斜杠命令（session.prompt 发送 '/xxx' 文本不会触发命令执行，
+// 会当普通消息进模型 turn）；命令卡由 command/run|command/done 事件渲染，此处无需乐观渲染
+async function chatExecCommand(line) {
+  if (!CHAT.sessionId) { toast('智能体未连接'); return null; }
+  try {
+    const v = await wbRpc('commands/execute', { args: { agentId: CHAT.sessionId, line } });
+    if (v && v.result && v.result.kind === 'error') {
+      toast('命令执行失败：' + (v.result.text || '未知错误'));
+    }
+    return v;
+  } catch (e) {
+    toast('命令执行失败：' + e.message);
     return null;
   }
 }
+
+async function sscSend() {
+  if (!CHAT.sessionId) { toast('智能体未连接'); return; }
+  const inp = document.getElementById('sscInput');
+  const text = inp.value.trim();
+  if (!text || CHAT.readonly) return;
+  // 斜杠命令分流：命中静态名单/动态目录/技能名 → 走网关 commands/execute（命令不依赖模型路由与附件）
+  const cm = text.match(/^\/([a-z0-9_-]+)/);
+  if (cm) {
+    const name = cm[1].toLowerCase();
+    const known = SSC_CMDS.some(c => c.name === '/' + name)
+      || (CHAT.cmdCatalog || []).some(c => c && String(c.name).toLowerCase() === name)
+      || (CHAT.skills || []).some(s => s && String(s.name).toLowerCase() === name);
+    if (known) {
+      inp.value = '';
+      sscAutoGrow();
+      document.getElementById('sscMenu').hidden = true;
+      await chatExecCommand(text);
+      return;
+    }
+    toast('未知命令，已作为普通消息发送');
+  }
+  if (CHAT.models && CHAT.models.routable === false) { toast('当前模型不可用，请先在上方选择模型'); return; }
+  // 图片附件预检（imageLimits 投影存在时）：数量 / 单图大小 / 总大小 / 类型
+  const attach = CHAT.attach.slice();
+  const lim = CHAT.imageLimits;
+  if (lim && attach.length) {
+    if (lim.maxImagesPerMessage != null && attach.length > lim.maxImagesPerMessage) {
+      toast(`图片数量超出限制（最多 ${lim.maxImagesPerMessage} 张）`); return;
+    }
+    let total = 0;
+    for (const a of attach) {
+      if (Array.isArray(lim.mediaTypes) && !lim.mediaTypes.includes(a.mediaType)) {
+        toast(`不支持的图片类型：${a.mediaType}`); return;
+      }
+      const bytes = a.data.length * 0.75; // base64 长度 ≈ 原始字节数 × 4/3
+      if (lim.maxImageBytes != null && bytes > lim.maxImageBytes) {
+        toast(`图片「${a.name}」过大（上限 ${Math.round(lim.maxImageBytes / 1024 / 1024)} MB）`); return;
+      }
+      total += bytes;
+    }
+    if (lim.maxMessageImageBytes != null && total > lim.maxMessageImageBytes) {
+      toast('图片总大小超出单条消息上限'); return;
+    }
+  }
+  // 组装 content 块：文本 + 图片（base64 无前缀）
+  const content = [{ type: 'text', text }]
+    .concat(attach.map(a => ({ type: 'image', mediaType: a.mediaType, data: a.data, name: a.name })));
+  const rpcId = 'wbp-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  // 乐观渲染用户气泡（pending 态，含图片缩略图）；事件流 user/message 按 source.rpcId 对齐去重
+  const el = chatRenderUser({ content }, true);
+  CHAT.pendingRpcIds.set(rpcId, el);
+  chatAppend(el);
+  inp.value = '';
+  sscAutoGrow();
+  document.getElementById('sscMenu').hidden = true;
+  try {
+    await wbRpc('session.prompt', {
+      sessionId: CHAT.sessionId,
+      mode: CHAT.running ? 'steer' : 'queue', // 运行中发送 = 转向指令
+      content,
+      clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    }, rpcId);
+    // 发送成功：此后不可再切换工作模式；清空附件区
+    CHAT.hasTurn = true;
+    CHAT.attach = [];
+    renderSscAttach();
+    renderSscChips();
+  } catch (e) {
+    el.remove();
+    CHAT.pendingRpcIds.delete(rpcId);
+    toast('发送失败：' + e.message);
+  }
+}
+
+async function sscStop() {
+  if (!CHAT.sessionId) return;
+  try {
+    await wbRpc('session.cancel', { sessionId: CHAT.sessionId });
+    toast('已请求停止生成');
+  } catch (e) {
+    toast('停止失败：' + e.message);
+  }
+}
+
+function chatQueueText(m) {
+  const c = (m && m.content) || [];
+  const t = c.filter(b => b && b.type === 'text').map(b => b.text || '').join(' ');
+  return t || '（非文本消息）';
+}
+
+// 工作模式中文名兜底（presets 清单加载失败/未就绪时使用）
+const CHAT_PRESET_FALLBACK = { standard: '标准模式', code: 'PTC 模式', minimal: '极简模式', cordis: '创造模式' };
+function chatPresetName(id) {
+  if (!id) return '…';
+  const p = (CHAT.presets || []).find(x => x && x.id === id);
+  if (p && p.name) return p.name;
+  return CHAT_PRESET_FALLBACK[id] || id;
+}
+
+// 权限级别中文名/中文描述映射（permissions 投影的 currentValue / options.value）
+const CHAT_PERM_NAMES = {
+  'read-only': '只读',
+  'workspace-write': '工作区写入',
+  'danger-full-access': '完全访问',
+  'custom': '自定义',
+};
+const CHAT_PERM_DESCS = {
+  'read-only': '仅允许读取文件与信息，任何写入或修改操作均不可用',
+  'workspace-write': '工作区内可写入文件，更宽泛的操作需要用户审批',
+  'danger-full-access': '完全文件访问权限，所有操作免审批',
+  'custom': '当前沙箱与审批组合不属于任何预设',
+};
+function chatPermName(value) {
+  const cur = value || (CHAT.perms && CHAT.perms.currentValue);
+  if (!cur) return '…';
+  return CHAT_PERM_NAMES[cur] || cur;
+}
+
+// ---------- 图片附件预览（输入栏上方 chip 列表） ----------
+function renderSscAttach() {
+  const box = document.getElementById('sscAttach');
+  if (!box) return;
+  box.innerHTML = CHAT.attach.map((a, i) => `
+    <span class="ssc-atch" title="${esc(a.name)}">
+      <img src="data:${esc(a.mediaType)};base64,${a.data}" style="width:26px;height:26px;object-fit:cover;border-radius:4px" alt="">
+      <span class="ssc-atch-name">${esc(a.name)}</span>
+      <span class="ssc-atch-x" data-i="${i}" title="移除">✕</span>
+    </span>`).join('');
+  box.hidden = !CHAT.attach.length;
+}
+
+// 单文件读为 base64 附件（剥离 data:...;base64, 前缀）
+function sscAttachFile(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const m = String(r.result || '').match(/^data:([^;]+);base64,(.*)$/s);
+      if (!m) { reject(new Error('bad data url')); return; }
+      CHAT.attach.push({ name: file.name, mediaType: m[1], data: m[2], size: file.size });
+      resolve();
+    };
+    r.onerror = () => reject(r.error || new Error('读取失败'));
+    r.readAsDataURL(file);
+  });
+}
+
+function renderSscChips() {
+  const box = document.getElementById('sscChips');
+  if (!box) return;
+  const cur = CHAT.models && CHAT.models.current;
+  let html = `<button class="ssc-chip" id="sscModelChip" title="点击选择模型">
+    模型 <span class="ssc-chip-val">${esc(cur ? (cur.model || '—') : '…')}</span> ▾</button>`;
+  html += `<button class="ssc-chip" id="sscModeChip" title="工作模式（对话开始前可切换）">
+    模式 <span class="ssc-chip-val">${esc(chatPresetName(CHAT.preset))}</span> ▾</button>`;
+  html += `<button class="ssc-chip" id="sscPermChip" title="智能体权限级别（沙箱与审批策略）">
+    权限 <span class="ssc-chip-val">${esc(chatPermName())}</span> ▾</button>`;
+  // 只读（已完成/逾期）时收起排队/转向队列态，仅保留模型/模式/权限与状态
+  if (!CHAT.readonly) for (const it of CHAT.queue) {
+    if (!it || it.placement === 'context') continue;
+    const txt = chatQueueText(it.message);
+    const short = txt.length > 16 ? txt.slice(0, 16) + '…' : txt;
+    html += `<span class="ssc-chip queue-chip" data-qid="${esc(it.id)}" title="${esc(txt)}">`
+      + `${it.placement === 'steering' ? '转向' : '排队'} · ${esc(short)}`
+      + `${it.placement === 'queued' ? '<span class="ssc-q-steer" data-qact="steer" title="转为转向指令">转</span>' : ''}`
+      + `<span class="ssc-q-remove" data-qact="remove" title="移除">✕</span></span>`;
+  }
+  html += `<span class="ssc-status">${CHAT.running ? '<span class="ssc-run">运行中</span>' : '待命'}</span>`;
+  box.innerHTML = html;
+}
+
+async function sscQueueAction(itemId, act) {
+  if (!CHAT.sessionId || !itemId) return;
+  try {
+    await wbRpc('session.updateQueue', { sessionId: CHAT.sessionId, itemId, action: { kind: act } });
+    // 服务端随后推送新的 session/queue 快照 → renderSscChips 重绘
+  } catch (e) {
+    toast('操作失败：' + e.message);
+  }
+}
+
+async function chatLoadModels() {
+  if (!CHAT.sessionId) return;
+  const token = CHAT.openToken;
+  try {
+    CHAT.models = await wbRpc('session.models', { sessionId: CHAT.sessionId });
+  } catch (e) {
+    CHAT.models = null;
+  }
+  if (CHAT.openToken !== token) return;
+  renderSscChips();
+  chatApplyModelState();
+}
+
+function chatApplyModelState() {
+  const inp = document.getElementById('sscInput');
+  if (!inp) return;
+  if (CHAT.readonly) { inp.disabled = true; return; }
+  if (CHAT.models && CHAT.models.routable === false) {
+    inp.disabled = true;
+    inp.placeholder = '当前模型不可用，请点击上方「模型」选择可用模型';
+  } else {
+    inp.disabled = false;
+    inp.placeholder = '输入消息，Enter 发送，Shift+Enter 换行；输入 / 唤起命令';
+  }
+}
+
+// 弹层渲染：按 sscPopKind 分支（'model' 模型目录 | 'mode' 工作模式清单 | 'perm' 权限级别清单）
+function renderSscPop() {
+  const pop = document.getElementById('sscPop');
+  if (pop.hidden) return;
+  if (CHAT.sscPopKind === 'perm') {
+    // 权限级别分支：permissions 投影（options + currentValue）；custom 为只读组合不可选
+    if (!CHAT.perms) { pop.innerHTML = '<div class="ssc-menu-empty">权限信息加载中…</div>'; return; }
+    const cur = CHAT.perms.currentValue;
+    let html = '<div class="ssc-pop-group">权限级别</div>';
+    for (const o of (CHAT.perms.options || [])) {
+      if (!o || !o.value) continue;
+      const isCur = o.value === cur;
+      const isCustom = o.value === 'custom';
+      html += `<div class="ssc-pop-item ssc-pop-mode${isCur ? ' cur' : ''}${isCustom ? ' locked' : ''}" data-perm="${esc(o.value)}">
+        <span class="ssc-pop-txt">
+          <span class="ssc-pop-name">${esc(CHAT_PERM_NAMES[o.value] || o.name || o.value)}</span>
+          <span class="ssc-pop-desc">${esc(CHAT_PERM_DESCS[o.value] || o.description || '')}</span>
+        </span>
+        ${isCur ? '<span class="ssc-pop-check">✓</span>' : ''}</div>`;
+    }
+    html += '<div class="ssc-pop-foot">切换权限将立即生效，影响智能体的文件访问与审批策略</div>';
+    pop.innerHTML = html || '<div class="ssc-menu-empty">无可用权限级别</div>';
+    return;
+  }
+  if (CHAT.sscPopKind === 'mode') {
+    // 工作模式分支：agentPreset.list 清单；对话开始后（hasTurn/只读）项不可点
+    if (!CHAT.presets) { pop.innerHTML = '<div class="ssc-menu-empty">工作模式加载中…</div>'; return; }
+    const switchable = !CHAT.hasTurn && !CHAT.readonly;
+    let html = '<div class="ssc-pop-group">工作模式</div>';
+    for (const p of CHAT.presets) {
+      if (!p || !p.id) continue;
+      const isCur = p.id === CHAT.preset;
+      html += `<div class="ssc-pop-item ssc-pop-mode${isCur ? ' cur' : ''}${switchable ? '' : ' locked'}" data-preset="${esc(p.id)}">
+        <span class="ssc-pop-txt">
+          <span class="ssc-pop-name">${esc(p.name || p.id)}${p.isDefault ? '<span class="rs-badge is-default" style="margin-left:6px">默认</span>' : ''}</span>
+          ${p.description ? `<span class="ssc-pop-desc">${esc(p.description)}</span>` : ''}
+        </span>
+        ${isCur ? '<span class="ssc-pop-check">✓</span>' : ''}</div>`;
+    }
+    if (!switchable) html += '<div class="ssc-pop-foot">对话开始后不可切换工作模式</div>';
+    pop.innerHTML = html || '<div class="ssc-menu-empty">无可用工作模式</div>';
+    return;
+  }
+  const m = CHAT.models;
+  if (!m) { pop.innerHTML = '<div class="ssc-menu-empty">模型目录加载中…</div>'; return; }
+  const cur = m.current || {};
+  let html = '<div class="ssc-pop-head"><span class="ssc-pop-title">模型目录</span>'
+    + '<button type="button" class="ssc-pop-refresh" data-ssc-refresh-models title="重新从智能体获取模型列表（新增 Provider 后无需重开会话即可刷新出来）">⟳ 刷新</button></div>';
+  for (const g of m.groups || []) {
+    html += `<div class="ssc-pop-group">${esc(g.name || g.id)}</div>`;
+    for (const mm of g.models || []) {
+      const isCur = cur.provider === g.id && cur.model === mm.id;
+      html += `<div class="ssc-pop-item${isCur ? ' cur' : ''}" data-prov="${esc(g.id)}" data-model="${esc(mm.id)}">
+        <span class="ssc-pop-name">${esc(mm.name || mm.id)}</span>
+        ${isCur ? '<span class="ssc-pop-check">✓</span>' : ''}</div>`;
+    }
+  }
+  for (const f of m.failures || []) {
+    html += `<div class="ssc-pop-group" style="color:#FCA5A5">${esc(f.name || f.id)}：目录加载失败</div>`;
+  }
+  pop.innerHTML = html || '<div class="ssc-menu-empty">无可用模型</div>';
+}
+
+// 刷新模型目录：重新调 session.models（设置中心新增 Provider 后，无需重开会话即可在弹层刷新出来）
+async function refreshChatModels() {
+  if (!CHAT.sessionId) { toast('智能体未连接'); return; }
+  await chatLoadModels();
+  if (CHAT.sscPopKind === 'model') {
+    renderSscPop(); // 弹层保持打开并重新渲染
+  }
+  toast('模型列表已刷新');
+}
+
+async function sscSelectModel(prov, model) {
+  if (!CHAT.sessionId) return;
+  try {
+    const v = await wbRpc('session.selectModel', { sessionId: CHAT.sessionId, provider: prov, model });
+    if (CHAT.models) CHAT.models.current = (v && v.selected) || { provider: prov, model };
+    renderSscChips();
+    chatApplyModelState();
+    document.getElementById('sscPop').hidden = true;
+    toast('模型已切换为 ' + model);
+  } catch (e) {
+    toast('切换失败：' + e.message);
+  }
+}
+
+// ---------- 工作模式（agentPreset）：清单加载 / 切换 ----------
+// 并行拉取 agentPreset.list（清单）与 session.list（取当前会话的 agentPreset）
+async function chatLoadPresets() {
+  if (!CHAT.sessionId) return;
+  const token = CHAT.openToken;
+  const [listRes, sessRes] = await Promise.all([
+    wbRpc('agentPreset.list', {}).catch(() => null),
+    wbRpc('session.list', {}).catch(() => null),
+  ]);
+  if (CHAT.openToken !== token) return;
+  CHAT.presets = (listRes && listRes.presets) || [];
+  const it = ((sessRes && sessRes.items) || []).find(i => i && i.sessionId === CHAT.sessionId);
+  CHAT.preset = (it && it.agentPreset) || 'standard';
+  renderSscChips();
+}
+
+// ---------- 斜杠命令目录（commands/list）：会话级动态命令清单 ----------
+// 供 sscSend 命令分流判定与 renderSscMenu 菜单合并；失败置 null（退回静态名单）
+async function chatLoadCommands() {
+  if (!CHAT.sessionId) return;
+  const token = CHAT.openToken;
+  try {
+    const v = await wbRpc('commands/list', { args: { agentId: CHAT.sessionId } });
+    if (CHAT.openToken !== token) return;
+    CHAT.cmdCatalog = Array.isArray(v) ? v : [];
+  } catch (e) {
+    if (CHAT.openToken !== token) return;
+    CHAT.cmdCatalog = null;
+  }
+}
+
+// 切换工作模式：仅空白会话可切（agentPreset.select，对话开始后服务端报 agent-preset-locked）
+async function sscSelectPreset(id) {
+  if (!CHAT.sessionId || !id) return;
+  if (CHAT.hasTurn || CHAT.readonly) { toast('对话开始后不可切换工作模式'); return; }
+  try {
+    await wbRpc('agentPreset.select', { sessionId: CHAT.sessionId, agentPreset: id });
+    CHAT.preset = id;
+    renderSscChips();
+    document.getElementById('sscPop').hidden = true;
+    toast('工作模式已切换为 ' + chatPresetName(id));
+  } catch (e) {
+    const msg = String((e && e.message) || '');
+    toast(msg.includes('agent-preset-locked') ? '对话开始后不可切换工作模式' : '切换失败：' + msg);
+  }
+}
+
+// ---------- 权限级别（permissions 投影）：切换 ----------
+// 走网关 commands/execute 执行 '/permission <预设名>'（session.prompt 发文本不会触发命令执行）；
+// 乐观更新 chip + 3 秒后重拉投影对齐真实状态（成功失败均拉）
+async function sscSelectPerm(value) {
+  if (!CHAT.sessionId || !value) return;
+  if (value === 'custom' || !CHAT.perms) return; // custom 为只读组合，不可直接切换
+  const token = CHAT.openToken;
+  const res = await chatExecCommand('/permission ' + value); // 失败已在内部 toast
+  if (res && res.result && res.result.kind !== 'error') {
+    CHAT.perms.currentValue = value; // 乐观更新，待投影/事件校正
+    renderSscChips();
+    document.getElementById('sscPop').hidden = true;
+    toast('权限已切换为 ' + chatPermName(value));
+  }
+  setTimeout(() => {
+    if (CHAT.openToken !== token || !CHAT.sessionId) return;
+    wbRpc('session.history', { sessionId: CHAT.sessionId, maxMessages: 1 })
+      .then(v => {
+        if (CHAT.openToken !== token) return;
+        if (v && v.projections && v.projections.values && v.projections.values.permissions) {
+          CHAT.perms = v.projections.values.permissions;
+          renderSscChips();
+        }
+      }).catch(() => { /* 忽略重拉失败，保留乐观值 */ });
+  }, 3000);
+}
+
+// ---------- 斜杠命令菜单（内置命令 + skill.list 会话技能） ----------
+// 内置命令静态中文版（dsh harness 原生命令；与技能重名时优先此表）
+const SSC_CMDS = [
+  { name: '/compact', desc: '压缩上下文——把较早的对话历史压缩为摘要，释放上下文窗口空间，让长对话可以继续', hint: '无参数' },
+  { name: '/permission', desc: '切换权限级别——控制智能体的文件访问范围与审批策略；无参数时查看当前级别与可用清单', hint: '<预设名>' },
+  { name: '/plan', desc: '计划模式——进入后智能体先输出完整计划再执行，适合复杂任务；参数 off 退出，或附带补充消息', hint: '[off|消息]' },
+  { name: '/feedback', desc: '会话反馈——记录你对本会话的反馈文本，供后续改进参考', hint: '<文本>' },
+  { name: '/goal', desc: '任务目标——为长任务设定/查看目标，智能体会围绕目标推进；clear 清除，edit 修改，pause/resume 暂停恢复', hint: '[目标|clear|edit|pause|resume]' },
+  { name: '/export', desc: '导出会话日志——把当前会话的完整日志打包为 ZIP 归档下载', hint: '无参数' },
+  { name: '/llm-wiki', desc: 'Wiki 知识库——检索与维护项目资源仓库文档（本地词法检索，无需下载模型）', hint: '技能' },
+];
+
+async function chatEnsureSkills() {
+  if (CHAT.skills || !CHAT.sessionId) return;
+  try {
+    const v = await wbRpc('skill.list', { sessionId: CHAT.sessionId });
+    CHAT.skills = (v && v.skills) || [];
+  } catch (e) {
+    CHAT.skills = [];
+  }
+}
+
+async function renderSscMenu() {
+  const menu = document.getElementById('sscMenu');
+  const inp = document.getElementById('sscInput');
+  const m = inp.value.match(/^\/(\S*)$/);
+  if (!m || CHAT.readonly) { menu.hidden = true; return; }
+  await chatEnsureSkills();
+  const kw = m[1].toLowerCase();
+  // 命令数据合并（按名称去重，先到先得）：
+  // 1) SSC_CMDS 静态中文版；2) cmdCatalog 动态目录（命中静态名跳过，其余用英文 description + input.hint）；
+  // 3) skills 技能（命中前两者名称跳过；技能名命中 SSC_CMDS 如 llm-wiki 时用静态中文版）
+  const seen = new Set();
+  const allItems = [];
+  for (const c of SSC_CMDS) { if (!seen.has(c.name)) { seen.add(c.name); allItems.push(c); } }
+  for (const c of (CHAT.cmdCatalog || [])) {
+    if (!c || !c.name) continue;
+    const n = '/' + c.name;
+    if (seen.has(n)) continue;
+    seen.add(n);
+    allItems.push({ name: n, desc: c.description || '', hint: (c.input && c.input.hint) || '' });
+  }
+  for (const s of (CHAT.skills || [])) {
+    if (!s || !s.name) continue;
+    const n = '/' + s.name;
+    if (seen.has(n)) continue;
+    seen.add(n);
+    allItems.push({ name: n, desc: s.description || s.whenToUse || '', hint: s.modelInvocable ? '' : '仅用户可调用' });
+  }
+  CHAT.menuItems = allItems.filter(c => c.name.toLowerCase().includes(kw));
+  CHAT.menuIdx = CHAT.menuItems.length ? 0 : -1;
+  menu.innerHTML = CHAT.menuItems.length
+    ? CHAT.menuItems.map((c, i) => `<div class="ssc-menu-item${i === 0 ? ' active' : ''}" data-cmd="${esc(c.name)}">
+        <span class="ssc-m-name">${esc(c.name)}</span>
+        <span class="ssc-m-desc">${esc(c.desc)}</span>
+        ${c.hint ? `<span class="ssc-m-hint">${esc(c.hint)}</span>` : ''}</div>`).join('')
+    : '<div class="ssc-menu-empty">无匹配命令</div>';
+  menu.hidden = false;
+}
+
+function sscMenuMove(delta) {
+  const n = (CHAT.menuItems || []).length;
+  if (!n) return;
+  CHAT.menuIdx = (CHAT.menuIdx + delta + n) % n;
+  document.querySelectorAll('#sscMenu .ssc-menu-item').forEach((el, i) => el.classList.toggle('active', i === CHAT.menuIdx));
+  const act = document.querySelector('#sscMenu .ssc-menu-item.active');
+  if (act) act.scrollIntoView({ block: 'nearest' });
+}
+
+function sscMenuPick(cmd) {
+  const items = CHAT.menuItems || [];
+  const idx = typeof cmd === 'string' ? items.findIndex(i => i.name === cmd) : CHAT.menuIdx;
+  const it = items[idx];
+  if (!it) return;
+  const inp = document.getElementById('sscInput');
+  inp.value = it.name + ' ';
+  document.getElementById('sscMenu').hidden = true;
+  inp.focus();
+  sscAutoGrow();
+}
+
+// ---------- 打开 / 关闭 ----------
+async function ChatOpen(task, readonly) {
+  const token = ++CHAT.openToken;
+  CHAT.task = task;
+  CHAT.readonly = !!readonly;
+  CHAT.sessionId = null;
+  CHAT.running = false;
+  CHAT.stream = null;
+  CHAT.toolCards = new Map();
+  CHAT.pendingRpcIds = new Map();
+  CHAT.cmdNotes = new Map();
+  CHAT.queue = [];
+  CHAT.skills = null;
+  CHAT.cmdCatalog = null;
+  CHAT.models = null;
+  CHAT.presets = null;
+  CHAT.preset = null;
+  CHAT.hasTurn = false;
+  CHAT.imageLimits = null;
+  CHAT.perms = null;
+  CHAT.attach = [];
+  CHAT.sscPopKind = 'model';
+  CHAT.subscribed = false;
+  CHAT.nearBottom = true;
+  CHAT.oldestSeq = null;
+  CHAT.hasMore = false;
+  CHAT.loadmoreEl = null;
+  CHAT.loadingHistory = false;
+  document.getElementById('ssChatList').innerHTML = '';
+  document.getElementById('sscAttach').hidden = true;
+  const inp = document.getElementById('sscInput');
+  inp.value = '';
+  inp.disabled = !!readonly;
+  inp.placeholder = '输入消息，Enter 发送，Shift+Enter 换行；输入 / 唤起命令';
+  sscAutoGrow();
+  document.getElementById('sscMenu').hidden = true;
+  document.getElementById('sscPop').hidden = true;
+  renderSscChips();
+  sscUpdateButtons();
+  showSessionLoading(true);
+  // 1) 绑定/创建 harness 会话（只读仅复用既有会话，绝不新建）
+  let sessionId = null;
+  if (readonly) {
+    sessionId = task.sessionId || extractSessionId(task.sessionSnapshot);
+  } else {
+    const snap = await ensureHarnessSession(task);
+    if (CHAT.openToken !== token) return;
+    // 失败分型（no-dir / offline / rpc）：渲染对应错误态并锁输入
+    if (snap && typeof snap === 'object' && snap.error) {
+      showSessionLoading(false);
+      chatShowOpenError(snap.error);
+      return;
+    }
+    sessionId = extractSessionId(snap) || task.sessionId || null;
+  }
+  if (!sessionId) {
+    showSessionLoading(false);
+    chatShowEmpty(readonly ? '该任务暂无会话记录' : '无法连接智能体', readonly ? '任务完成前未创建会话' : 'dsh 智能体服务未就绪，请稍后重试');
+    return;
+  }
+  CHAT.sessionId = sessionId;
+  // 2) WS 事件流（全局复用）+ 历史尾页 + 模型目录 + 工作模式
+  WB_WS.ensure();
+  await chatLoadHistory();
+  if (CHAT.openToken !== token) return;
+  showSessionLoading(false);
+  chatLoadModels();
+  chatLoadPresets();
+  chatLoadCommands();
+}
+
+function ChatClose() {
+  CHAT.openToken++;
+  WB_WS.release();
+  CHAT.sessionId = null;
+  CHAT.task = null;
+  CHAT.stream = null;
+  CHAT.running = false;
+  CHAT.pendingRpcIds.clear();
+  CHAT.attach = [];
+  CHAT.cmdCatalog = null;
+  CHAT.presets = null;
+  CHAT.preset = null;
+  CHAT.hasTurn = false;
+  CHAT.imageLimits = null;
+  CHAT.perms = null;
+  CHAT.sscPopKind = 'model';
+  const attachBox = document.getElementById('sscAttach');
+  if (attachBox) { attachBox.innerHTML = ''; attachBox.hidden = true; }
+  document.getElementById('sscMenu').hidden = true;
+  document.getElementById('sscPop').hidden = true;
+}
+
+// ---------- 输入栏事件绑定（一次） ----------
+(function initSscComposer() {
+  const inp = document.getElementById('sscInput');
+  inp.addEventListener('compositionstart', () => { CHAT.composing = true; });
+  inp.addEventListener('compositionend', () => { CHAT.composing = false; });
+  inp.addEventListener('input', () => {
+    sscAutoGrow();
+    renderSscMenu();
+  });
+  inp.addEventListener('keydown', (e) => {
+    const menu = document.getElementById('sscMenu');
+    if (!menu.hidden) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        sscMenuMove(e.key === 'ArrowDown' ? 1 : -1);
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey && !CHAT.composing) {
+        e.preventDefault();
+        sscMenuPick();
+        return;
+      }
+      if (e.key === 'Escape') { menu.hidden = true; return; }
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !CHAT.composing) {
+      e.preventDefault();
+      sscSend();
+    }
+  });
+  document.getElementById('ssChatScroll').addEventListener('scroll', () => {
+    const sc = document.getElementById('ssChatScroll');
+    CHAT.nearBottom = sc.scrollHeight - sc.scrollTop - sc.clientHeight < 90;
+  });
+  document.getElementById('sscSendBtn').addEventListener('click', sscSend);
+  document.getElementById('sscStopBtn').addEventListener('click', sscStop);
+  document.getElementById('sscMenu').addEventListener('click', (e) => {
+    const it = e.target.closest('.ssc-menu-item');
+    if (it) sscMenuPick(it.dataset.cmd);
+  });
+  document.getElementById('sscChips').addEventListener('click', (e) => {
+    if (e.target.closest('#sscModelChip')) {
+      CHAT.sscPopKind = 'model';
+      const pop = document.getElementById('sscPop');
+      pop.hidden = !pop.hidden;
+      renderSscPop();
+      return;
+    }
+    if (e.target.closest('#sscModeChip')) {
+      CHAT.sscPopKind = 'mode';
+      const pop = document.getElementById('sscPop');
+      pop.hidden = !pop.hidden;
+      renderSscPop();
+      return;
+    }
+    if (e.target.closest('#sscPermChip')) {
+      CHAT.sscPopKind = 'perm';
+      const pop = document.getElementById('sscPop');
+      pop.hidden = !pop.hidden;
+      renderSscPop();
+      return;
+    }
+    const qa = e.target.closest('[data-qact]');
+    if (qa) {
+      const chip = qa.closest('.queue-chip');
+      if (chip) sscQueueAction(chip.dataset.qid, qa.dataset.qact);
+    }
+  });
+  // 弹层点击：按 sscPopKind 分发到模型 / 工作模式 / 权限级别选择
+  document.getElementById('sscPop').addEventListener('click', (e) => {
+    const refreshBtn = e.target.closest('[data-ssc-refresh-models]');
+    if (refreshBtn) { refreshChatModels(); return; }
+    const it = e.target.closest('.ssc-pop-item');
+    if (!it) return;
+    if (CHAT.sscPopKind === 'mode') {
+      // 不可切换时（对话已开始/只读）点击仅提示，不发起 RPC
+      if (it.classList.contains('locked')) { toast('对话开始后不可切换工作模式'); return; }
+      if (it.dataset.preset) sscSelectPreset(it.dataset.preset);
+    } else if (CHAT.sscPopKind === 'perm') {
+      // custom 为只读组合：sscSelectPerm 内部直接 return，不发 RPC
+      if (it.dataset.perm) sscSelectPerm(it.dataset.perm);
+    } else if (it.dataset.prov) {
+      sscSelectModel(it.dataset.prov, it.dataset.model);
+    }
+  });
+  // 图片附件：按钮唤起文件选择 → 逐文件读 base64 → 预览
+  document.getElementById('sscAttachBtn').addEventListener('click', () => {
+    document.getElementById('sscAttachInput').click();
+  });
+  document.getElementById('sscAttachInput').addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // 清空以允许重复选择同一文件
+    for (const f of files) {
+      try { await sscAttachFile(f); }
+      catch (err) { toast('图片读取失败：' + (f && f.name ? f.name : '')); }
+    }
+    renderSscAttach();
+  });
+  // 附件预览移除（✕ 委托）
+  document.getElementById('sscAttach').addEventListener('click', (e) => {
+    const x = e.target.closest('.ssc-atch-x');
+    if (!x) return;
+    CHAT.attach.splice(Number(x.dataset.i), 1);
+    renderSscAttach();
+  });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#ssComposer')) {
+      document.getElementById('sscMenu').hidden = true;
+      document.getElementById('sscPop').hidden = true;
+    }
+  });
+})();
 
 // ======================================================================
 // 会话工作台：三栏（左：身份卡/文件树/统计 · 中：iframe · 右：上下文/书架）
@@ -5165,14 +6890,70 @@ function renderSwStats(stats) {
   document.getElementById('swStatsTxt').textContent = `文件 ${s.fileCount} 个 · ${fmtSizeSw(s.size)}`;
 }
 
+// ---------- 右栏：会话统计卡 ----------
+// 参考单价（元/百万 token，DeepSeek 参考价；供应商调价时改这里即可）
+const WB_PRICE = { input: 2, cacheRead: 0.5, output: 8 };
+
+// token 数缩写：<1000 原样，否则 (n/1000).toFixed(0)+'K'（与上下文卡 K 缩写风格一致）
+function fmtTokK(n) {
+  n = Math.max(0, Math.round(n || 0));
+  return n < 1000 ? String(n) : (n / 1000).toFixed(0) + 'K';
+}
+
+// 渲染会话统计卡：缓存命中率 / Token 速度 / 参考费用
+// 数据取 session.history 投影 values.tokenUsage / values.sessionStats（与上下文卡同一次轮询）
+// 无 turn 数据（新会话）时保持占位「开始对话后统计」
+function renderSwSessionStats(vals) {
+  const body = document.getElementById('swStatsBody');
+  if (!body) return;
+  const tu = vals && vals.tokenUsage;
+  const st = vals && vals.sessionStats;
+  const cr = (tu && tu.cacheReadTokens) || 0;      // 缓存命中输入
+  const ui = (tu && tu.uncachedInputTokens) || 0;  // 未命中输入
+  const cw = (tu && tu.cacheWriteTokens) || 0;     // 缓存写入
+  const outT = (tu && tu.outputTokens) || 0;       // 输出 token
+  const turns = (st && st.turns) || 0;
+  if (!turns && !(cr + ui + cw + outT)) {
+    body.innerHTML = '<div class="sw-ctx-empty">开始对话后统计</div>';
+    return;
+  }
+  const rows = [];
+  // 缓存命中率 = 命中 /（命中 + 未命中输入 + 写入），分母为 0 时不显示该行
+  const denom = cr + ui + cw;
+  if (denom > 0) {
+    rows.push(`<div class="sw-stat-row"><span class="k">缓存命中率</span><span class="v">${Math.round(cr / denom * 100)}%</span></div>`
+      + `<div class="sw-stat-sub">缓存命中 ${fmtTokK(cr)} / 未命中输入 ${fmtTokK(ui)} / 输出 ${fmtTokK(outT)}</div>`);
+  }
+  // Token 速度 = 输出 token / 解码耗时（秒），decodeMs>0 时显示
+  const dMs = (st && st.decodeMs) || 0;
+  if (dMs > 0) {
+    const dTok = (st && st.decodeTokens) || 0;
+    const ttft = (st && st.ttftMs) || 0;
+    rows.push(`<div class="sw-stat-row"><span class="k">Token 速度</span><span class="v">${(dTok / (dMs / 1000)).toFixed(1)} tok/s</span></div>`
+      + `<div class="sw-stat-sub">首字 ${(ttft / 1000).toFixed(1)}s · 回合 ${turns}</div>`);
+  }
+  // 参考费用：(未命中输入+写入)×input + 命中×cacheRead + 输出×output（元/百万 token）
+  const cost = (ui + cw) * WB_PRICE.input / 1e6 + cr * WB_PRICE.cacheRead / 1e6 + outT * WB_PRICE.output / 1e6;
+  const costTxt = cost > 0 && cost < 0.0001 ? '¥<0.0001' : '¥' + cost.toFixed(4);
+  rows.push(`<div class="sw-stat-row"><span class="k">参考费用</span><span class="v">${costTxt}</span></div>`
+    + `<div class="sw-stat-sub">按参考单价估算</div>`);
+  body.innerHTML = rows.join('');
+}
+
 // ---------- 右栏：上下文卡片 ----------
 async function refreshSwCtx() {
   const task = SW.task;
-  if (!task || !task.sessionId || SW.ctxRunning) return;
+  if (!task || !task.sessionId || SW.ctxRunning) {
+    // 无会话任务：统计卡同置占位（与投影缺失分支一致；压缩运行中不重置避免闪烁）
+    if (task && !task.sessionId && !SW.ctxRunning) renderSwSessionStats(null);
+    return;
+  }
   const body = document.getElementById('swCtxBody');
   try {
     const v = await wbRpc('session.history', { sessionId: task.sessionId, maxMessages: 1 });
     const proj = v && v.projections && v.projections.values;
+    // 会话统计卡：同一份投影里的 tokenUsage / sessionStats（proj 为空时函数内自行置占位）
+    renderSwSessionStats(proj);
     const cp = proj && proj.contextPressure;
     if (!cp || !cp.contextWindow) {
       body.innerHTML = '<div class="sw-ctx-empty">开始对话后统计</div>';
@@ -5256,8 +7037,11 @@ function renderSwShelf() {
       <div class="sw-shelf-item" data-rel="${esc(d.relPath)}">
         <span class="sd-dot" style="color:${swCatOf(d.category || 'agent-doc').color};background:${swCatOf(d.category || 'agent-doc').color}"></span>
         <div class="sd-main">
-          <div class="sd-title" title="${esc(d.title)}">${esc(d.title)}</div>
-          ${d.tags && d.tags.length ? `<div class="sd-tags">${d.tags.slice(0, 3).map(t => `<span class="sd-tag">${esc(t)}</span>`).join('')}</div>` : ''}
+          <div class="sd-title" title="${esc(d.relPath)}">${esc(d.title)}</div>
+          <div class="sd-badges">
+            <span class="sd-cat">${esc(d.category === 'note' ? '个人笔记' : d.category || '')}</span>
+            <span class="sd-lib">${esc(d.library || '')}</span>
+          </div>
         </div>
         <span class="sd-del" data-del="${esc(d.relPath)}" title="移除文档">×</span>
       </div>`).join('');
@@ -5278,9 +7062,13 @@ async function openSwShelfPick() {
   document.getElementById('shpList').innerHTML = '<div class="ap-empty">加载中...</div>';
   showModal(modal);
   try {
-    const d = await fetchJson('/api/wiki/docs');
+    // 新契约：文档清单走 /api/wiki/docs（{docs}），仓库元数据（名称/检索模式）走 /api/wiki/repos（{repos}）
+    const [d, r] = await Promise.all([
+      fetchJson('/api/wiki/docs'),
+      fetchJson('/api/wiki/repos').catch(() => null), // 仓库端点失败不阻塞文档列表（仓库名回退默认）
+    ]);
     SW.shpDocs = Array.isArray(d.docs) ? d.docs : [];
-    SW.shpRepos = Array.isArray(d.repos) ? d.repos : [];
+    SW.shpRepos = (r && Array.isArray(r.repos)) ? r.repos : [];
     renderShpList();
   } catch (e) {
     document.getElementById('shpList').innerHTML = '<div class="ap-empty">加载失败：' + esc(e.message) + '</div>';
@@ -5315,11 +7103,15 @@ function renderShpList() {
       const repoDocs = catDocs.filter(d => (d.repoSlug || 'default') === slug);
       const repoKey = `${ck}/${slug}`;
       const open = SW.shpRepoOpen && SW.shpRepoOpen.has(repoKey);
+      // 仓库检索模式徽标（如本地词法检索），仅有值时展示
+      const modeBadge = repoMeta && repoMeta.mode
+        ? `<span title="检索模式：${esc(repoMeta.mode)}" style="font-size:9.5px;color:var(--text-4);background:rgba(255,255,255,0.05);border-radius:5px;padding:1px 6px;flex-shrink:0">${esc(repoMeta.mode)}</span>` : '';
       return `
       <div class="shp-repo${open ? ' open' : ' folded'}">
         <div class="shp-repo-head" data-shp-repo-toggle="${esc(repoKey)}">
           <span class="shp-cat-dot" style="color:${cat.color};background:${cat.color}"></span>
           <span class="shp-repo-name">📂 ${esc(repoName)}</span>
+          ${modeBadge}
           <span class="shp-repo-count">${repoDocs.length} 篇</span>
           <span class="shp-arrow">▾</span>
         </div>
@@ -5468,11 +7260,8 @@ async function removeSwShelfDoc(relPath) {
   document.getElementById('ssCloseBtn').addEventListener('click', stopSwCtxPoll);
 })();
 
-// iframe 加载完成后隐藏「正在连接智能体...」遮罩
-sessionFrame.addEventListener('load', () => showSessionLoading(false));
-
-// 从快照字符串中尽力提取会话 id：
-// dsh.sessions.current 为 JSON（形如 {"sessionId":"..."}），解析失败再退回 regex 兜底
+// 从会话快照字符串中尽力提取会话 id：
+// 快照为 JSON（形如 {"sessionId":"...","v":1}，由 ensureHarnessSession 写入），解析失败退回 regex 兜底
 function extractSessionId(snapshot) {
   if (!snapshot) return null;
   try {
@@ -5483,38 +7272,25 @@ function extractSessionId(snapshot) {
   return m ? m[1] : null;
 }
 
-// 关闭弹层时把 dsh web 当前会话快照绑定回任务（PATCH bindSession → 任务进入「进行中」）
-async function bindSessionOnClose(task) {
-  if (!task) return;
-  let current = null;
-  try { current = localStorage.getItem('dsh.sessions.current'); } catch (e) { return; }
-  const prev = task.sessionSnapshot == null ? null : task.sessionSnapshot;
-  // 快照无变化且已有 sessionId：无需回写；既无新快照又无旧内容：无物可绑
-  if ((current === prev && task.sessionId) || (!current && !prev && !task.sessionId)) return;
-  const sessionId = extractSessionId(current);
-  try {
-    await fetchJson('/api/tasks/' + encodeURIComponent(task.id), {
-      method: 'PATCH',
-      body: JSON.stringify({ action: 'bindSession', snapshot: current, sessionId })
-    });
-    await refreshTasks(); // sessionId 落盘后任务派生为 in_progress
-  } catch (e) {
-    console.error('[DSH Work Buddy] 会话绑定失败:', e);
-  }
-}
+// 会话绑定说明：自研对话组件时代，任务↔会话绑定在 ensureHarnessSession 创建会话时即已
+// 回写（PATCH bindSession → 任务进入「进行中」），无需在关闭弹层时从 dsh web 读取快照。
 
-// 关闭会话弹层（× / 遮罩点击）：通用 modal-mask 监听只负责摘除 is-open，绑定动作在此补做
+// 关闭会话弹层（× / 遮罩点击）：通用 modal-mask 监听只负责摘除 is-open，清理动作在此补做
 function closeSessionModal() {
   if (!SS.task) return;
-  const task = SS.task;
-  const readonly = SS.readonly;
   SS.task = null;
   SS.readonly = false;
   // 强制移除页面上所有残留弹层（含完成会话后自动弹出的归档弹窗），避免 modal-mask 挡住导航
   document.querySelectorAll('.modal-mask.is-open').forEach(m => m.classList.remove('is-open'));
   document.getElementById('ssReadonlyBar').hidden = true;
-  // 只读模式（已完成/逾期）仅查看历史，关闭时不回写会话绑定
-  if (!readonly) bindSessionOnClose(task);
+  // 回写智能体记忆（MEMORY.md 同步到任务/模板），失败静默不阻塞关闭
+  if (CHAT.task && CHAT.task.id && CHAT.sessionId) {
+    fetchJson('/api/tasks/' + encodeURIComponent(CHAT.task.id) + '/sync-memory', { method: 'POST', body: '{}' })
+      .catch(e => console.warn('[DSH Work Buddy] 同步智能体记忆失败:', e && e.message));
+  }
+  // 停止自研对话组件的增量渲染（WS 连接全局复用，仅停止重连意愿）
+  ChatClose();
+  stopSwCtxPoll();
 }
 document.getElementById('ssCloseBtn').addEventListener('click', closeSessionModal);
 modalSession.addEventListener('click', e => {
@@ -5589,16 +7365,23 @@ document.getElementById('rnSubmitBtn').addEventListener('click', async () => {
   btn.disabled = true;
   btn.textContent = '提交中…';
   try {
-    await fetchJson('/api/tasks/' + encodeURIComponent(RN.taskId), {
+    const updated = await fetchJson('/api/tasks/' + encodeURIComponent(RN.taskId), {
       method: 'PATCH',
       body: JSON.stringify({ action: 'renew', deadline })
     });
     hideModal(modalRenew);
-    // 关闭拦截条，恢复会话可交互；同步更新弹层期限文案
+    // 关闭拦截条，恢复会话可交互；同步更新弹层期限文案与本地任务状态
     document.getElementById('ssReadonlyBar').hidden = true;
     SS.readonly = false;
+    if (SS.task) {
+      SS.task.deadline = deadline;
+      if (updated && updated.status) SS.task.status = updated.status; // 服务端已按新期限重算状态
+    }
     document.getElementById('ssTaskDeadline').innerHTML =
       `${ICON_CAL}<span>期限 ${fmtDeadline({ deadline }).text}</span>`;
+    // 恢复会话交互：只读模式打开时不会新建会话（ChatOpen 只复用既有 sessionId）；
+    // 续期后必须重开非只读对话组件，才会立即建立/复用 harness 会话，否则输入框虽可用但发不出消息
+    if (SS.task) ChatOpen(SS.task, false);
     toast('已设定新期限，会话已恢复');
     await refreshTasks();
     loadOverview(); // 总览同步刷新
@@ -5623,6 +7406,13 @@ document.getElementById('ssCompleteBtn').addEventListener('click', async () => {
     });
     task.status = 'completed';
     applySessionBtnState(true);
+    // 即时锁定：置只读态 → 拦截条出现（task.status 已为 completed，文案走「该任务已完成…」分支）
+    // + 禁用输入栏 + 收起排队/转向队列 chips
+    SS.readonly = true;
+    CHAT.readonly = true;
+    applyReadonlyBar(task);
+    chatApplyModelState();
+    renderSscChips();
     refreshTasks(); // 看板 / KPI / 详情同步刷新（不阻塞弹层交互）
     window.WB_OPEN_ARCHIVE && window.WB_OPEN_ARCHIVE(task.id);
   } catch (e) {
@@ -5764,18 +7554,18 @@ document.getElementById('workspaceList').addEventListener('click', async e => {
     const ws = WB.workspaces.find(w => w.id === id);
     const ok2 = await wbConfirm({
       title: '删除工作区',
-      message: `确定删除工作区「${ws ? ws.name : ''}」？\n将从智能体工作区列表中移除并取消信任（files 中不再显示）。关联任务与磁盘文件、归档内容全部保留，任务将显示为「已删除的工作区」。`,
+      message: `确定删除工作区「${ws ? ws.name : ''}」？\n仅解除 dsh 智能体注册，不删除磁盘文件（目录与文件全部保留）。关联任务与归档内容保留，任务将显示为「已删除的工作区」。`,
       okText: '确认删除',
       danger: true
     });
     if (!ok2) return;
     try {
-      const res = await fetchJson('/api/workspaces/' + encodeURIComponent(id), { method: 'DELETE' });
+      await fetchJson('/api/workspaces/' + encodeURIComponent(id), { method: 'DELETE' });
       // 同步移除本地副本后再渲染，避免删除项残留
       WB.workspaces = WB.workspaces.filter(w => w.id !== id);
       if (WB.currentWs === id) setCurrentWorkspace('all');
       else { renderWorkspaces(); refreshTasks(); }
-      toast(res && res.linkedTasks ? `工作区已删除，${res.linkedTasks} 个关联任务已保留` : '工作区已删除');
+      toast('工作区已删除（仅解除注册，磁盘文件保留）');
     } catch (err) {
       toast(err.message || '删除失败');
     }
@@ -6114,11 +7904,15 @@ function arCardHtml(s, group) {
   const chip = (s.label && s.label.text)
     ? `<span class="task-chip" style="--chip:${esc(s.label.color || '#64748B')}"><i></i>${esc(s.label.text)}</span>`
     : '';
-  const sizeTxt = s.sizeBytes == null ? '—'
-    : (s.sizeBytes >= 1048576 ? (s.sizeBytes / 1048576).toFixed(2) + ' MB' : fmtSize(s.sizeBytes));
+  // 统计单位在位展示：文件大小保留两位小数 MB；Token 消耗两位小数，≥1 亿用「亿」，否则用「万」
+  const sizeTxt = s.sizeBytes == null ? '—' : (Number(s.sizeBytes) / 1048576).toFixed(2) + ' MB';
   const messages = s.messages != null ? s.messages : '—';
-  const tokenCell = s.tokens != null
-    ? `<div class="st"><span class="k">Token 消耗</span><span class="v">${esc(String(s.tokens))}</span></div>` : '';
+  const tokenCell = (() => {
+    if (s.tokens == null) return '';
+    const tk = Number(s.tokens);
+    const tokTxt = tk >= 1e8 ? (tk / 1e8).toFixed(2) + ' 亿' : (tk / 1e4).toFixed(2) + ' 万';
+    return `<div class="st"><span class="k">Token 消耗</span><span class="v">${esc(tokTxt)}</span></div>`;
+  })();
   return `
     <div class="ar-card ar-card-click" data-group="${esc(group)}" data-task-id="${esc(s.taskId)}" title="点击查看文件分类与对话记录">
       <div class="ar-card-head">
@@ -6509,9 +8303,10 @@ document.getElementById('scNewTaskBtn').addEventListener('click', openNewTaskMod
 // ======================================================================
 const RS = {
   tab: 'plugins',          // 当前 Tab：plugins | skills | agent | wiki
-  plugins: [],             // 插件清单（/api/resources/plugins，含 enabled）
+  plugins: [],             // 插件清单（/api/resources/plugins，dsh 运行时插件 {id,name,description,source}）
   pluginsSource: null,     // harness | unavailable
-  skills: [],              // 技能清单（/api/resources/skills，含 enabled）
+  skills: [],              // 技能清单（/api/resources/skills，dsh skill.list 实时数据）
+  skillsSource: null,      // harness | unavailable
   templates: [],           // 智能体模板（/api/resources/agent-templates）
   docs: [],                // Wiki 文档（/api/wiki/docs，含 category + repoSlug）
   repos: [],               // Wiki 仓库元数据（/api/wiki/repos，含 category + slug + name）
@@ -6548,8 +8343,10 @@ async function loadRsSkills() {
   try {
     const data = await fetchJson('/api/resources/skills');
     RS.skills = Array.isArray(data.skills) ? data.skills : [];
+    RS.skillsSource = data.source || 'harness';
   } catch (e) {
     RS.skills = [];
+    RS.skillsSource = 'unavailable';
   }
   document.getElementById('rsSkillsBadge').textContent = String(RS.skills.length);
 }
@@ -6640,7 +8437,7 @@ function deriveKeyRef(route) {
   return `${String(route).toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`;
 }
 const ROUTE_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
-const SSC = { deepseek: null, defModel: null, piAi: null, custom: [], customKeyState: {} };
+const SSC = { deepseek: null, defModel: null, piAi: null, custom: [], customKeyState: {}, catalog: [], activeProviders: {}, catEdit: null };
 
 async function loadSettingsPage() {
   const badge = document.getElementById('scApiBadge');
@@ -6683,10 +8480,16 @@ async function loadSettingsPage() {
       const key = g.provider || 'deepseek-official';
       SSC.modelsByProvider[key] = (g.models || []).map((mm) => mm.id);
     });
+    // 内置供应商目录（除 DeepSeek 官方外的 catalog provider）
+    SSC.catalog = provList.filter((x) => x.provider !== 'deepseek-official');
+    SSC.catEdit = null;
+    // 已配置/可用的 provider 集合：llm.models 模型组 + active 目录供应商 + 自定义已添加路由
+    rebuildActiveProviders();
 
     renderSettingsDeepseek();
     renderSettingsDefault();
     renderSettingsCustom();
+    renderCatalogProviders();
     renderPluginsSettings();
     renderAdvancedNamespaces();
     badge.textContent = `${provList.filter((x) => x.active).length} 个供应商已启用 · ${SSC.custom.length} 个自定义 Provider · ${Object.keys(SSC.modelsByProvider).reduce((n, k) => n + SSC.modelsByProvider[k].length, 0)} 个模型`;
@@ -6695,6 +8498,33 @@ async function loadSettingsPage() {
     const hint = document.getElementById('scDeepseekKeyHint');
     if (hint) hint.textContent = '加载失败: ' + (e.message || e);
   }
+}
+
+// 已配置/可用的 provider 集合（默认模型下拉数据源）：
+// 1) llm.models 返回的模型组（deepseek 等已路由）；
+// 2) 目录中已激活的供应商（以 llm-pi-ai.providers 中实际存在 profile 为准，与 harness active 语义一致，
+//    避免依赖可能陈旧的 catalog.active——移除自定义/目录供应商后不会残留）；
+// 3) 自定义 Provider 卡中已添加的路由及其 models。
+function rebuildActiveProviders() {
+  SSC.activeProviders = {};
+  (SSC.modelGroups || []).forEach((g) => {
+    const key = g.provider || 'deepseek-official';
+    SSC.activeProviders[key] = { name: g.name || key, models: (g.models || []).map((mm) => mm.id) };
+  });
+  const piProvs = (SSC.piAi && SSC.piAi.value && SSC.piAi.value.providers) || {};
+  (SSC.catalog || []).forEach((x) => {
+    if (piProvs[x.provider] && !SSC.activeProviders[x.provider]) {
+      SSC.activeProviders[x.provider] = { name: x.displayName || x.provider, models: [] };
+    }
+  });
+  (SSC.custom || []).forEach((c) => {
+    const m = ((c.profile && c.profile.models) || []).map((x) => x.id).filter(Boolean);
+    if (SSC.activeProviders[c.route]) {
+      m.forEach((id) => { if (!SSC.activeProviders[c.route].models.includes(id)) SSC.activeProviders[c.route].models.push(id); });
+    } else {
+      SSC.activeProviders[c.route] = { name: (c.profile && c.profile.displayName) || c.route, models: m };
+    }
+  });
 }
 
 // ---------- DeepSeek 官方卡 ----------
@@ -6841,18 +8671,71 @@ async function clearDeepseekKey() {
 }
 
 // ---------- 默认模型卡 ----------
+// 默认模型指向的 Provider 若已被删除/不可用（如删除自定义 Provider 后），
+// 新会话将无法发起对话（model-unavailable）。渲染警示条并提供一键恢复。
+function renderDefaultModelWarn() {
+  const warn = document.getElementById('scDefaultWarn');
+  if (!warn) return;
+  const v = SSC.defModel && SSC.defModel.value;
+  const prov = v && v.provider;
+  const missing = prov && !(SSC.activeProviders || {})[prov];
+  if (!missing) { warn.hidden = true; warn.innerHTML = ''; return; }
+  warn.hidden = false;
+  warn.innerHTML = `<div class="set-warn-bar">
+    <span>默认模型指向的 Provider「${esc(prov)}」当前不可用（可能已被删除），不处理将无法发起新对话。</span>
+    <button type="button" class="btn btn-primary" id="scDefaultRestore">恢复为 DeepSeek 默认</button>
+  </div>`;
+  const btn = document.getElementById('scDefaultRestore');
+  if (btn) btn.onclick = async () => {
+    try {
+      const dm = SSC.defModel;
+      const res = await wbRpc('settings.mutate', {
+        ns: 'agent-default-model',
+        ops: [{ op: 'set', path: ['provider'], value: 'deepseek-official' }, { op: 'set', path: ['model'], value: 'deepseek-v4-flash' }],
+        expectedRevision: dm.revision
+      });
+      SSC.defModel.revision = res.revision;
+      SSC.defModel.value = res.value;
+      renderSettingsDefault();
+      const msg = document.getElementById('scDefaultMsg');
+      msg.className = 'set-msg ok'; msg.textContent = '默认模型已恢复为 DeepSeek（deepseek-v4-flash）';
+    } catch (e) {
+      toast('恢复默认模型失败：' + (e.message || e));
+    }
+  };
+}
+
+// 默认模型指向已删除 Provider 时自动恢复为 DeepSeek（删除 Provider 后的防护闭环）
+async function ensureDefaultModelValid() {
+  const dm = SSC.defModel;
+  if (dm && dm.value && dm.value.provider && !(SSC.activeProviders || {})[dm.value.provider]) {
+    const res = await wbRpc('settings.mutate', {
+      ns: 'agent-default-model',
+      ops: [{ op: 'set', path: ['provider'], value: 'deepseek-official' }, { op: 'set', path: ['model'], value: 'deepseek-v4-flash' }],
+      expectedRevision: dm.revision
+    });
+    SSC.defModel.revision = res.revision;
+    SSC.defModel.value = res.value;
+    renderSettingsDefault();
+    return true;
+  }
+  return false;
+}
+
 function renderSettingsDefault() {
   const v = SSC.defModel.value;
   const provSel = document.getElementById('scDefaultProvider');
-  provSel.innerHTML = SSC.providers.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
+  const ids = Object.keys(SSC.activeProviders || {});
+  provSel.innerHTML = ids.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
   const modelSel = document.getElementById('scDefaultModel');
-  modelSel.innerHTML = (SSC.modelsByProvider[v.provider] || SSC.modelsByProvider['deepseek-official'] || []).map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
-  if (v.provider) provSel.value = v.provider;
+  modelSel.innerHTML = (((SSC.activeProviders[v.provider] || {}).models) || []).map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
+  if (v.provider && ids.includes(v.provider)) provSel.value = v.provider;
   if (v.model) modelSel.value = v.model;
   if (v.reasoningEffort) document.getElementById('scDefaultEffort').value = v.reasoningEffort;
   provSel.onchange = () => {
-    modelSel.innerHTML = (SSC.modelsByProvider[provSel.value] || []).map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
+    modelSel.innerHTML = (((SSC.activeProviders[provSel.value] || {}).models) || []).map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
   };
+  renderDefaultModelWarn();
 }
 
 async function saveDefaultModel() {
@@ -6884,7 +8767,7 @@ async function saveDefaultModel() {
 function renderSettingsCustom() {
   const list = document.getElementById('scCustomList');
   if (!SSC.custom.length) {
-    list.innerHTML = '<div class="set-empty-hint">暂无自定义 Provider。可添加 OpenAI 兼容 / Anthropic 兼容接口（本地网关、中转、vLLM 等）。</div>';
+    list.innerHTML = '<div class="set-empty-hint">暂无自定义 Provider。可添加 OpenAI 兼容 / Anthropic 兼容接口（本地 vLLM、llama.cpp、ollama 等 OpenAI 兼容端点、中转网关均适用）。</div>';
     return;
   }
   list.innerHTML = SSC.custom.map((c) => {
@@ -6896,12 +8779,63 @@ function renderSettingsCustom() {
         <span class="ci-dot ${keyOn ? 'on' : 'off'}"></span>
         <div class="ci-main">
           <div class="ci-title">${esc(p.displayName || c.route)}</div>
-          <div class="ci-meta">${esc(c.route)} · ${esc(p.api || 'openai-compatible')} · ${esc(p.baseURL || '—')}</div>
+          <div class="ci-meta">${esc(c.route)} · ${esc(p.api || 'openai-completions')} · ${esc(p.baseURL || '—')} · ${((p.models || []).length || 0)} 模型</div>
         </div>
         <span class="ci-status">${keyOn ? '密钥已配置' : '密钥未配置'}</span>
+        <button class="ci-del" data-route="${esc(c.route)}" data-custom-edit="1">编辑</button>
         <button class="ci-del" data-route="${esc(c.route)}">移除</button>
       </div>`;
   }).join('');
+}
+
+// 编辑：回填表单 → 展开添加区
+function editCustomProvider(route) {
+  const c = SSC.custom.find((x) => x.route === route);
+  if (!c) return;
+  const p = c.profile || {};
+  document.getElementById('scCustomRoute').value = c.route;
+  document.getElementById('scCustomName').value = p.displayName || '';
+  document.getElementById('scCustomBaseURL').value = p.baseURL || '';
+  document.getElementById('scCustomApi').value = p.api || 'openai-completions';
+  document.getElementById('scCustomModels').value = ((p.models || []).map((m) => m.id)).join(', ');
+  document.getElementById('scCustomKey').value = '';
+  document.getElementById('scCustomKey').placeholder = '已配置，输入新值覆盖；留空保留';
+  document.getElementById('scCustomAddSummary').textContent = `编辑自定义 Provider：${c.route}`;
+  document.getElementById('scCustomCancelEdit').hidden = false;
+  document.getElementById('scCustomAddDetails').setAttribute('open', '');
+  const msg = document.getElementById('scCustomMsg');
+  msg.className = 'set-msg'; msg.textContent = `正在编辑「${route}」：保存将覆盖配置（Route ID 不可改）。`;
+}
+
+function cancelEditCustomProvider() {
+  ['scCustomRoute', 'scCustomName', 'scCustomBaseURL', 'scCustomKey', 'scCustomModels'].forEach((id) => { document.getElementById(id).value = ''; });
+  document.getElementById('scCustomKey').placeholder = 'sk-...';
+  document.getElementById('scCustomAddSummary').textContent = '＋ 添加自定义 Provider';
+  document.getElementById('scCustomCancelEdit').hidden = true;
+  document.getElementById('scCustomAddDetails').removeAttribute('open');
+  const msg = document.getElementById('scCustomMsg');
+  msg.className = 'set-msg'; msg.textContent = '';
+}
+
+// 「获取可用模型」：对表单中的 Base URL 调 OpenAI 兼容 GET /models（本地 vLLM / llama.cpp / ollama 均提供）
+async function discoverCustomModels() {
+  const msg = document.getElementById('scCustomMsg');
+  const baseURL = document.getElementById('scCustomBaseURL').value.trim();
+  const key = document.getElementById('scCustomKey').value.trim();
+  const api = document.getElementById('scCustomApi').value;
+  if (!baseURL) { msg.className = 'set-msg err'; msg.textContent = '请先填写 Base URL 再获取模型列表。'; return; }
+  msg.className = 'set-msg'; msg.textContent = '正在从端点获取模型列表…';
+  try {
+    const r = await wbRpc('llm.discoverModels', { settingsNs: 'llm-pi-ai', baseURL, api, apiKey: key || undefined });
+    const models = ((r && r.models) || []).map((x) => x && x.id).filter(Boolean);
+    if (!models.length) { msg.className = 'set-msg err'; msg.textContent = '端点未返回可用模型（不支持 GET /models 时请手动填写）。'; return; }
+    document.getElementById('scCustomModels').value = models.join(', ');
+    msg.className = 'set-msg ok';
+    msg.textContent = `已获取 ${models.length} 个模型，已填入模型列表（保存后生效）。`;
+  } catch (e) {
+    msg.className = 'set-msg err';
+    msg.textContent = '获取失败: ' + ((e && e.message) || e).slice(0, 140);
+  }
 }
 
 async function saveCustomProvider() {
@@ -6917,8 +8851,11 @@ async function saveCustomProvider() {
     const modelsRaw = document.getElementById('scCustomModels').value;
     if (!route) { msg.className = 'set-msg err'; msg.textContent = 'Route ID 不能为空'; return; }
     if (!ROUTE_RE.test(route)) { msg.className = 'set-msg err'; msg.textContent = 'Route ID 需为小写字母数字与中划线（如 openai / my-provider）'; return; }
-    if (SSC.custom.some((c) => c.route === route)) { msg.className = 'set-msg err'; msg.textContent = `Route「${route}」已存在`; return; }
     if (!baseURL) { msg.className = 'set-msg err'; msg.textContent = 'Base URL 不能为空'; return; }
+    const existing = SSC.custom.find((c) => c.route === route);
+    if (existing && existing.profile && existing.profile.baseURL && existing.profile.baseURL !== baseURL) {
+      // 编辑：允许改协议/端点；确认已在列表「编辑」入口进入
+    }
     const models = modelsRaw.split(/[,，]/).map((s) => s.trim()).filter(Boolean).map((id) => ({ id, name: id }));
     const keyRef = deriveKeyRef(route);
     const profile = { apiKeyEnv: keyRef, displayName, baseURL, api };
@@ -6927,14 +8864,15 @@ async function saveCustomProvider() {
     SSC.piAi.revision = res.revision;
     SSC.piAi.value = res.value;
     if (key) await wbRpc('credentials.set', { ref: keyRef, value: key });
-    // 刷新列表
-    SSC.custom = SSC.custom.concat([{ route, profile }]);
-    SSC.keyState[keyRef] = { configured: !!key, source: key ? 'file' : null };
+    // 刷新列表与默认模型数据源
+    SSC.custom = Object.keys((SSC.piAi.value && SSC.piAi.value.providers) || {}).map((r) => ({ route: r, profile: SSC.piAi.value.providers[r] }));
+    SSC.keyState[keyRef] = { configured: key ? true : (existing && SSC.keyState[keyRef] && SSC.keyState[keyRef].configured), source: key ? 'file' : (SSC.keyState[keyRef] && SSC.keyState[keyRef].source) };
+    rebuildActiveProviders();
     renderSettingsCustom();
+    renderSettingsDefault();
+    cancelEditCustomProvider();
     msg.className = 'set-msg ok';
-    msg.textContent = `已添加自定义 Provider「${displayName}」`;
-    ['scCustomRoute', 'scCustomName', 'scCustomBaseURL', 'scCustomKey', 'scCustomModels'].forEach((id) => { document.getElementById(id).value = ''; });
-    document.getElementById('scCustomAddDetails').removeAttribute('open');
+    msg.textContent = existing ? `已更新自定义 Provider「${displayName}」（在对话模型列表中刷新即可选用）` : `已添加自定义 Provider「${displayName}」（在对话模型列表中刷新即可选用）`;
   } catch (e) {
     msg.className = 'set-msg err';
     msg.textContent = (e.message || e).slice(0, 140);
@@ -6953,10 +8891,121 @@ async function removeCustomProvider(route) {
     await wbRpc('credentials.unset', { ref: deriveKeyRef(route) }).catch(() => {});
     SSC.custom = SSC.custom.filter((c) => c.route !== route);
     delete SSC.keyState[deriveKeyRef(route)];
+    rebuildActiveProviders();
+    const autoRestored = await ensureDefaultModelValid(); // 若默认模型指向被删路由 → 自动恢复 DeepSeek
     renderSettingsCustom();
+    renderSettingsDefault();
     msg.className = 'set-msg ok';
-    msg.textContent = `已移除「${route}」`;
+    msg.textContent = `已移除「${route}」` + (autoRestored ? '；默认模型已被恢复为 DeepSeek' : '');
   } catch (e) {
+    msg.className = 'set-msg err';
+    msg.textContent = (e.message || e).slice(0, 120);
+  }
+}
+
+// ---------- 内置供应商目录卡 ----------
+// 从 llm.providers 展示 catalog 供应商：active=true 即已启用（已写入 profile）；
+// 内联表单配置 API Key（可选覆盖 Base URL）→ 写 llm-pi-ai.providers[<id>] + credentials.set。
+function renderCatalogProviders() {
+  const list = document.getElementById('scCatalogList');
+  const count = document.getElementById('scCatalogCount');
+  if (!list || !SSC.catalog) return;
+  const piProvs = (SSC.piAi && SSC.piAi.value && SSC.piAi.value.providers) || {};
+  const on = SSC.catalog.filter((x) => !!piProvs[x.provider]);
+  count.textContent = `${on.length}/${SSC.catalog.length} 已启用`;
+  if (!SSC.catalog.length) { list.innerHTML = '<div class="set-empty-hint">无内置供应商。</div>'; return; }
+  list.innerHTML = SSC.catalog.map((p) => {
+    const keyOn = !!piProvs[p.provider]; // 以实际 profile 为准（与 harness active 语义一致）
+    const editing = SSC.catEdit === p.provider;
+    const ref = deriveKeyRef(p.provider);
+    const cur = piProvs[p.provider] || {};
+    return `
+      <div class="set-custom-item" data-prov="${esc(p.provider)}">
+        <span class="ci-dot ${keyOn ? 'on' : 'off'}"></span>
+        <div class="ci-main">
+          <div class="ci-title">${esc(p.displayName || p.provider)}</div>
+          <div class="ci-meta">${esc(p.provider)} · ${cur.baseURL ? esc(cur.baseURL) : '官方端点'}</div>
+        </div>
+        <span class="ci-status">${keyOn ? '已启用' : '未启用'}</span>
+        <button class="ci-del" data-cat-edit="${esc(p.provider)}">${keyOn ? '重新配置' : '配置'}</button>
+        ${keyOn ? `<button class="ci-del" data-cat-del="${esc(p.provider)}">移除</button>` : ''}
+      </div>
+      ${editing ? `
+      <div class="set-catalog-form" data-cat-form="${esc(p.provider)}">
+        <div class="set-custom-grid">
+          <div>
+            <div class="form-label">API Key（凭证引用 <span class="mono">${esc(ref)}</span>）</div>
+            <input class="form-input" data-cat-key type="password" placeholder="${keyOn ? '已配置，输入新值覆盖' : 'sk-...'}" autocomplete="off" spellcheck="false" />
+          </div>
+          <div>
+            <div class="form-label">Base URL（可选，覆盖官方端点；留空恢复官方）</div>
+            <input class="form-input" data-cat-base placeholder="https://api.openai.com/v1" spellcheck="false" />
+          </div>
+        </div>
+        <div class="set-actions">
+          <button class="btn btn-primary" data-cat-save="${esc(p.provider)}">保存配置</button>
+          <button class="btn btn-ghost" data-cat-cancel="1">取消</button>
+          <span class="set-msg"></span>
+        </div>
+      </div>` : ''}`;
+  }).join('');
+}
+
+async function saveCatalogProvider(provider) {
+  const form = document.querySelector(`[data-cat-form="${CSS.escape(provider)}"]`);
+  const msgEl = form.querySelector('.set-msg');
+  msgEl.className = 'set-msg'; msgEl.textContent = '保存中...';
+  try {
+    const key = form.querySelector('[data-cat-key]').value.trim();
+    const base = form.querySelector('[data-cat-base]').value.trim();
+    const ref = deriveKeyRef(provider);
+    const cur = ((SSC.piAi.value && SSC.piAi.value.providers) || {})[provider] || {};
+    const ops = [{ op: 'set', path: ['providers', provider, 'apiKeyEnv'], value: ref }];
+    if (base) { if (cur.baseURL !== base) ops.push({ op: 'set', path: ['providers', provider, 'baseURL'], value: base }); }
+    else if (cur.baseURL) ops.push({ op: 'unset', path: ['providers', provider, 'baseURL'] });
+    const res = await wbRpc('settings.mutate', { ns: 'llm-pi-ai', ops, expectedRevision: SSC.piAi.revision });
+    SSC.piAi.revision = res.revision;
+    SSC.piAi.value = res.value;
+    if (key) await wbRpc('credentials.set', { ref, value: key });
+    SSC.catEdit = null;
+    // 同步目录 active 状态与默认模型数据源
+    const pList = await wbRpc('llm.providers', {});
+    SSC.catalog = (pList.providers || []).filter((x) => x.provider !== 'deepseek-official');
+    SSC.custom = Object.keys((SSC.piAi.value && SSC.piAi.value.providers) || {}).map((r) => ({ route: r, profile: SSC.piAi.value.providers[r] }));
+    SSC.keyState[ref] = { configured: key ? true : (SSC.keyState[ref] && SSC.keyState[ref].configured), source: key ? 'file' : (SSC.keyState[ref] && SSC.keyState[ref].source) };
+    rebuildActiveProviders();
+    renderCatalogProviders();
+    renderSettingsDefault();
+    const msg = document.getElementById('scCatalogMsg');
+    msg.className = 'set-msg ok';
+    msg.textContent = `已启用「${provider}」（在对话模型列表中刷新即可选用其模型）`;
+  } catch (e) {
+    msgEl.className = 'set-msg err';
+    msgEl.textContent = (e.message || e).slice(0, 120);
+  }
+}
+
+async function removeCatalogProvider(provider) {
+  if (!window.confirm(`确定移除内置供应商「${provider}」的配置？将同时删除其 API 密钥并恢复未启用状态。`)) return;
+  try {
+    const res = await wbRpc('settings.mutate', { ns: 'llm-pi-ai', ops: [{ op: 'unset', path: ['providers', provider] }], expectedRevision: SSC.piAi.revision });
+    SSC.piAi.revision = res.revision;
+    SSC.piAi.value = res.value;
+    await wbRpc('credentials.unset', { ref: deriveKeyRef(provider) }).catch(() => {});
+    SSC.catEdit = null;
+    const pList = await wbRpc('llm.providers', {});
+    SSC.catalog = (pList.providers || []).filter((x) => x.provider !== 'deepseek-official');
+    SSC.custom = Object.keys((SSC.piAi.value && SSC.piAi.value.providers) || {}).map((r) => ({ route: r, profile: SSC.piAi.value.providers[r] }));
+    delete SSC.keyState[deriveKeyRef(provider)];
+    rebuildActiveProviders();
+    const autoRestored = await ensureDefaultModelValid(); // 若默认模型指向被删供应商 → 自动恢复 DeepSeek
+    renderCatalogProviders();
+    renderSettingsDefault();
+    const msg = document.getElementById('scCatalogMsg');
+    msg.className = 'set-msg ok';
+    msg.textContent = `已移除「${provider}」配置` + (autoRestored ? '；默认模型已被恢复为 DeepSeek' : '');
+  } catch (e) {
+    const msg = document.getElementById('scCatalogMsg');
     msg.className = 'set-msg err';
     msg.textContent = (e.message || e).slice(0, 120);
   }
@@ -7227,9 +9276,25 @@ function bindSettingsEvents() {
   $('scDeepseekSave') && $('scDeepseekSave').addEventListener('click', saveDeepseekConfig);
   $('scDefaultSave') && $('scDefaultSave').addEventListener('click', saveDefaultModel);
   $('scCustomSave') && $('scCustomSave').addEventListener('click', saveCustomProvider);
+  $('scCustomDiscover') && $('scCustomDiscover').addEventListener('click', discoverCustomModels);
+  $('scCustomCancelEdit') && $('scCustomCancelEdit').addEventListener('click', cancelEditCustomProvider);
   $('scCustomList') && $('scCustomList').addEventListener('click', (e) => {
     const btn = e.target.closest('.ci-del');
-    if (btn) removeCustomProvider(btn.dataset.route);
+    if (!btn) return;
+    const route = btn.dataset.route;
+    if (btn.dataset.customEdit) editCustomProvider(route);
+    else removeCustomProvider(route);
+  });
+  // 内置供应商目录卡：配置/保存/取消/移除
+  $('scCatalogList') && $('scCatalogList').addEventListener('click', (e) => {
+    const editBtn = e.target.closest('[data-cat-edit]');
+    if (editBtn) { SSC.catEdit = editBtn.dataset.catEdit; renderCatalogProviders(); return; }
+    const saveBtn = e.target.closest('[data-cat-save]');
+    if (saveBtn) { saveCatalogProvider(saveBtn.dataset.catSave); return; }
+    const cancelBtn = e.target.closest('[data-cat-cancel]');
+    if (cancelBtn) { SSC.catEdit = null; renderCatalogProviders(); return; }
+    const delBtn = e.target.closest('[data-cat-del]');
+    if (delBtn) { removeCatalogProvider(delBtn.dataset.catDel); return; }
   });
   // 插件与运行时卡
   $('setPluginsSave') && $('setPluginsSave').addEventListener('click', savePluginsSettings);
@@ -7248,40 +9313,8 @@ function bindSettingsEvents() {
 }
 bindSettingsEvents();
 
-// ---------- 插件 / 技能开关事件委托（toggle → POST /api/resources/{plugins|skills}/toggle） ----------
-async function rsHandleToggle(e) {
-  const tg = e.target.closest('[data-rs-toggle]');
-  if (!tg) return;
-  const kind = tg.dataset.rsToggle;   // plugin | skill
-  const id = tg.dataset.id;
-  const wantEnabled = !tg.classList.contains('on');
-  tg.style.pointerEvents = 'none';
-  try {
-    const url = kind === 'plugin'
-      ? '/api/resources/plugins/toggle'
-      : '/api/resources/skills/toggle';
-    const body = kind === 'plugin'
-      ? { id, enabled: wantEnabled }
-      : { dir: id, enabled: wantEnabled };
-    await fetchJson(url, { method: 'POST', body: JSON.stringify(body) });
-    // 本地状态同步 + 重渲染
-    if (kind === 'plugin') {
-      const p = RS.plugins.find(x => x.id === id);
-      if (p) p.enabled = wantEnabled;
-    } else {
-      const s = RS.skills.find(x => x.dir === id);
-      if (s) s.enabled = wantEnabled;
-    }
-    toast(wantEnabled ? '已启用（智能体可调用）' : '已禁用（智能体不可调用）');
-    renderRsPane();
-  } catch (err) {
-    toast('切换失败：' + err.message);
-  } finally {
-    tg.style.pointerEvents = '';
-  }
-}
-document.getElementById('rsPanePlugins').addEventListener('click', rsHandleToggle);
-document.getElementById('rsPaneSkills').addEventListener('click', rsHandleToggle);
+// 说明：插件/技能 Tab 均为 dsh 实时数据的只读展示（agentPreset 无启停、modelInvocable 是只读事实），
+// 原 toggle 事件委托已随 mock 时代一并移除；技能空态的「注入智能体说明文档」按钮事件见下方委托。
 
 // ---------- Tab 切换 ----------
 document.getElementById('rsTabs').addEventListener('click', e => {
@@ -7303,7 +9336,7 @@ function renderRsPane() {
   else renderRsWikiPane();
 }
 
-// ---------- 插件 Tab ----------
+// ---------- 插件 Tab（dsh 智能体运行时插件：__DSH_BOOT__ 实时清单，只读展示） ----------
 function renderRsPluginsPane() {
   const pane = document.getElementById('rsPanePlugins');
   if (RS.pluginsSource === 'unavailable') {
@@ -7316,49 +9349,52 @@ function renderRsPluginsPane() {
   }
   pane.innerHTML = RS.plugins.length
     ? `<div class="rs-pane-head">
-        <span class="rs-pane-note">dsh 智能体自带插件 · 开关控制智能体会话中是否可调用（新插件安装能力建设中）</span>
+        <span class="rs-pane-note">dsh 智能体运行时插件（__DSH_BOOT__ 实时清单）· 只读</span>
       </div>
       <div class="rs-cards">${RS.plugins.map(p => `
-        <div class="rs-card${p.enabled ? '' : ' disabled-card'}" title="${esc(p.id)}">
+        <div class="rs-card" title="${esc(p.id)}">
           <div class="rs-card-head">
             <div class="rs-card-title">${esc(p.name || p.id)}</div>
+            <span class="rs-badge trust-system">系统</span>
           </div>
           <div class="rs-card-id">${esc(p.id)}</div>
-          <div class="rs-card-desc">${esc(p.description || '（暂无描述）')}</div>
-          <div class="rs-toggle-row">
-            <div class="rs-toggle${p.enabled ? ' on' : ''}" data-rs-toggle="plugin" data-id="${esc(p.id)}" role="switch" aria-checked="${p.enabled ? 'true' : 'false'}" title="${p.enabled ? '已启用 · 点击禁用' : '已禁用 · 点击启用'}"></div>
-            <span class="rs-tg-label${p.enabled ? ' on' : ''}">${p.enabled ? '智能体可调用' : '已禁用'}</span>
-          </div>
+          <div class="rs-card-desc">${esc(p.description || 'dsh 智能体运行时插件')}</div>
         </div>`).join('')}</div>`
-    : '<div class="rs-empty"><div class="rs-empty-title">暂无插件</div><div class="rs-empty-sub">dsh web 返回的插件清单为空。</div></div>';
+    : '<div class="rs-empty"><div class="rs-empty-title">暂无插件</div><div class="rs-empty-sub">dsh 智能体返回的插件清单为空。</div></div>';
 }
 
-// ---------- 技能 Tab ----------
+// ---------- 技能 Tab（dsh skill.list 实时数据：只读展示，无启停能力） ----------
 function renderRsSkillsPane() {
   const pane = document.getElementById('rsPaneSkills');
+  if (RS.skillsSource === 'unavailable') {
+    pane.innerHTML = `
+      <div class="rs-empty">
+        <div class="rs-empty-title">启动智能体服务后可见</div>
+        <div class="rs-empty-sub">未连接 dsh 智能体服务（127.0.0.1:3080），服务启动后切换 Tab 或重新进入本页即可加载。</div>
+      </div>`;
+    return;
+  }
   if (!RS.skills.length) {
     pane.innerHTML = `
       <div class="rs-empty">
         <div class="rs-empty-title">暂无技能</div>
-        <div class="rs-empty-sub">resources\\skills 目录下暂无技能。可先把 llm-wiki 说明文档注入到各工作区（DSH-WORK-BUDDY-WIKI.md），供会话内智能体通过 curl 调用知识库。</div>
+        <div class="rs-empty-sub">当前数据根目录（data/）下未发现 dsh 技能（SKILL.md）。可先注入 llm-wiki 说明文档到各工作区，供会话内智能体通过 curl 调用知识库。</div>
         <button class="btn btn-primary" id="rsInjectBtn" style="margin-top:14px">注入智能体说明文档</button>
       </div>`;
     return;
   }
   pane.innerHTML = `<div class="rs-pane-head">
-      <span class="rs-pane-note">本地技能目录 · 开关控制智能体是否可调用该技能（写入 SKILL.md 禁用标记；新技能安装能力建设中）</span>
+      <span class="rs-pane-note">dsh 智能体技能（skill.list 实时数据）· 按数据根目录解析；调用手动（/命令）或智能体自动触发</span>
     </div>
     <div class="rs-cards">${RS.skills.map(s => `
-    <div class="rs-card${s.enabled ? '' : ' disabled-card'}">
+    <div class="rs-card">
       <div class="rs-card-head">
         <div class="rs-card-title">${esc(s.name)}</div>
+        <span class="rs-badge${s.modelInvocable === false ? '' : ' skill-auto'}">${s.modelInvocable === false ? '仅用户可调用' : '智能体可调用'}</span>
       </div>
-      <div class="rs-card-id">${esc(s.dir)}/SKILL.md</div>
+      <div class="rs-card-id">/${esc(s.name)}</div>
       <div class="rs-card-desc">${esc(s.description || '（暂无描述）')}</div>
-      <div class="rs-toggle-row">
-        <div class="rs-toggle${s.enabled ? ' on' : ''}" data-rs-toggle="skill" data-id="${esc(s.dir)}" role="switch" aria-checked="${s.enabled ? 'true' : 'false'}" title="${s.enabled ? '已启用 · 点击禁用' : '已禁用 · 点击启用'}"></div>
-        <span class="rs-tg-label${s.enabled ? ' on' : ''}">${s.enabled ? '智能体可调用' : '已禁用'}</span>
-      </div>
+      ${s.whenToUse ? `<div class="rs-card-desc" style="color:var(--text-4)">适用：${esc(s.whenToUse)}</div>` : ''}
     </div>`).join('')}</div>`;
 }
 
@@ -7391,6 +9427,7 @@ function renderRsAgentPane() {
       <div class="rs-card-actions">
         <span class="rs-card-date">${esc(fmtDate(t.createdAt))}</span>
         <button class="tbtn" data-act="edit">编辑</button>
+        <button class="tbtn" data-act="memory">记忆</button>
         <button class="tbtn" data-act="del">删除</button>
       </div>
     </div>`).join('');
@@ -7448,7 +9485,7 @@ document.getElementById('rsTplSubmitBtn').addEventListener('click', async () => 
   }
 });
 
-// 模板 Tab 事件委托：新建 / 编辑 / 删除
+// 模板 Tab 事件委托：新建 / 编辑 / 记忆 / 删除
 document.getElementById('rsPaneAgent').addEventListener('click', async e => {
   if (e.target.closest('#rsTplNewBtn')) {
     openRsTplModal(null);
@@ -7463,6 +9500,10 @@ document.getElementById('rsPaneAgent').addEventListener('click', async e => {
     openRsTplModal(tpl);
     return;
   }
+  if (btn.dataset.act === 'memory') {
+    openRsMemoryModal(tpl);
+    return;
+  }
   if (btn.dataset.act === 'del') {
     if (!confirm(`确认删除模板「${tpl.name}」？`)) return;
     try {
@@ -7473,6 +9514,79 @@ document.getElementById('rsPaneAgent').addEventListener('click', async e => {
     } catch (err) {
       toast('删除失败：' + err.message);
     }
+  }
+});
+
+// ---------- 智能体记忆弹窗（模板 MEMORY.md：查看 / 编辑 / 重置） ----------
+const modalRsMemory = document.getElementById('modal-rs-memory');
+const RS_MEMORY = { tplId: null }; // 当前编辑记忆的模板 id
+
+// 打开记忆弹窗：GET /api/resources/agent-templates/:id/memory 填充 textarea
+async function openRsMemoryModal(tpl) {
+  RS_MEMORY.tplId = tpl.id;
+  document.getElementById('rsMemoryTitle').textContent = '智能体记忆 · ' + (tpl.name || tpl.id);
+  const ta = document.getElementById('rsMemoryContent');
+  const errEl = document.getElementById('rsMemoryError');
+  hideError(errEl);
+  ta.value = '加载中...';
+  ta.disabled = true;
+  showModal(modalRsMemory);
+  try {
+    const d = await fetchJson('/api/resources/agent-templates/' + encodeURIComponent(tpl.id) + '/memory');
+    ta.value = (d && typeof d.content === 'string') ? d.content : '';
+  } catch (e) {
+    ta.value = '';
+    showError(errEl, '记忆加载失败：' + e.message);
+  } finally {
+    ta.disabled = false;
+  }
+}
+
+// 保存记忆：PUT {content}
+document.getElementById('rsMemorySaveBtn').addEventListener('click', async () => {
+  if (!RS_MEMORY.tplId) return;
+  const btn = document.getElementById('rsMemorySaveBtn');
+  const errEl = document.getElementById('rsMemoryError');
+  const ta = document.getElementById('rsMemoryContent');
+  hideError(errEl);
+  btn.disabled = true;
+  btn.textContent = '保存中...';
+  try {
+    await fetchJson('/api/resources/agent-templates/' + encodeURIComponent(RS_MEMORY.tplId) + '/memory', {
+      method: 'PUT',
+      body: JSON.stringify({ content: ta.value })
+    });
+    toast('记忆已保存');
+  } catch (e) {
+    showError(errEl, e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '保存';
+  }
+});
+
+// 重置记忆：POST reset → 用返回 content 重填
+document.getElementById('rsMemoryResetBtn').addEventListener('click', async () => {
+  if (!RS_MEMORY.tplId) return;
+  const btn = document.getElementById('rsMemoryResetBtn');
+  const errEl = document.getElementById('rsMemoryError');
+  const ta = document.getElementById('rsMemoryContent');
+  if (!confirm('确认重置该智能体的记忆为初始模板内容？')) return;
+  hideError(errEl);
+  btn.disabled = true;
+  btn.textContent = '重置中...';
+  try {
+    const d = await fetchJson('/api/resources/agent-templates/' + encodeURIComponent(RS_MEMORY.tplId) + '/memory/reset', {
+      method: 'POST',
+      body: '{}'
+    });
+    ta.value = (d && typeof d.content === 'string') ? d.content : '';
+    toast('记忆已重置');
+  } catch (e) {
+    showError(errEl, '重置失败：' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '重置';
   }
 });
 
