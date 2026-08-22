@@ -1449,6 +1449,9 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 .ssc-atch .ssc-atch-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px}
 .ssc-atch .ssc-atch-x{cursor:pointer;color:#FCA5A5;flex-shrink:0}
 .ssc-atch .ssc-atch-x:hover{color:#F87171}
+.ssc-atch .ssc-atch-size{color:var(--text-4);flex-shrink:0;font-variant-numeric:tabular-nums}
+.ssc-atch .ssc-atch-ico{font-size:13px;line-height:1;flex-shrink:0}
+.ssc-atch .ssc-atch-save{color:#34D672;flex-shrink:0;font-weight:700}
 /* 输入区主体 */
 .ssc-main{display:flex;align-items:flex-end;gap:8px;background:rgba(255,255,255,0.035);border:1px solid var(--border);border-radius:14px;padding:8px 8px 8px 14px;transition:border-color .15s}
 .ssc-main:focus-within{border-color:rgba(34,197,94,0.5);box-shadow:0 0 0 3px rgba(34,197,94,0.08)}
@@ -3581,6 +3584,10 @@ select.form-input option{background:#12161F;color:var(--text-2)}
                   </div>
                 </div>
               </div>
+              <label class="form-check" style="margin:10px 0 4px" title="声明该 Provider 的全部模型支持图片输入（如 qwen2-vl / llava 等多模态模型）；勾选后对话窗口才会显示图片上传图标，图片会作为视觉输入随消息发送">
+                <input type="checkbox" id="scCustomVision" />
+                该 Provider 的模型支持图片输入（多模态）
+              </label>
               <div class="set-actions">
                 <button class="btn btn-primary" id="scCustomSave">保存自定义 Provider</button>
                 <button class="btn btn-ghost" id="scCustomCancelEdit" hidden>取消编辑</button>
@@ -3921,7 +3928,11 @@ select.form-input option{background:#12161F;color:var(--text-2)}
                 <div class="ssc-attach" id="sscAttach" hidden></div>
                 <div class="ssc-main">
                   <textarea id="sscInput" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行；输入 / 唤起命令"></textarea>
-                  <button class="ssc-btn" id="sscAttachBtn" title="添加图片附件">
+                  <button class="ssc-btn" id="sscFileBtn" title="添加文件附件（文本内容注入，所有模型可用）">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+                  </button>
+                  <input type="file" id="sscFileInput" accept=".txt,.md,.json,.jsonl,.csv,.log,.js,.ts,.jsx,.tsx,.py,.java,.go,.rs,.c,.h,.cpp,.hpp,.html,.htm,.css,.scss,.yaml,.yml,.xml,.toml,.ini,.sh,.bat,.ps1,.sql,.rst,.vue,.svelte" multiple hidden>
+                  <button class="ssc-btn" id="sscAttachBtn" title="添加图片附件" hidden>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
                   </button>
                   <input type="file" id="sscAttachInput" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
@@ -5400,6 +5411,8 @@ const CHAT = {
   imageLimits: null,        // 图片附件限制投影（history projections.values.imageLimits）
   perms: null,              // 权限级别投影（projections.values.permissions = {options,currentValue}）
   attach: [],               // 待发送图片附件 [{name,mediaType,data,size}]
+  files: [],                // 待发送文本文件附件 [{name,size,kind,text}]（文本块注入，所有模型可用）
+  vision: null,             // 当前模型是否支持图片输入（null=未知/加载中；true 才显示图片上传按钮）
   sscPopKind: 'model',      // 弹层内容：'model' 模型选择 | 'mode' 工作模式选择 | 'perm' 权限级别选择
 };
 
@@ -6086,7 +6099,8 @@ async function sscSend() {
   if (!CHAT.sessionId) { toast('智能体未连接'); return; }
   const inp = document.getElementById('sscInput');
   const text = inp.value.trim();
-  if (!text || CHAT.readonly) return;
+  // 允许仅携带附件发送（文件/图片）；readonly 一律拦截
+  if ((!text && !CHAT.files.length && !CHAT.attach.length) || CHAT.readonly) return;
   // 斜杠命令分流：命中静态名单/动态目录/技能名 → 走网关 commands/execute（命令不依赖模型路由与附件）
   const cm = text.match(/^\/([a-z0-9_-]+)/);
   if (cm) {
@@ -6104,8 +6118,8 @@ async function sscSend() {
     toast('未知命令，已作为普通消息发送');
   }
   if (CHAT.models && CHAT.models.routable === false) { toast('当前模型不可用，请先在上方选择模型'); return; }
-  // 图片附件预检（imageLimits 投影存在时）：数量 / 单图大小 / 总大小 / 类型
-  const attach = CHAT.attach.slice();
+  // 图片附件预检（imageLimits 投影存在时）：数量 / 单图大小 / 总大小 / 类型；仅当前模型支持图片时才会携带
+  const attach = CHAT.vision === true ? CHAT.attach.slice() : [];
   const lim = CHAT.imageLimits;
   if (lim && attach.length) {
     if (lim.maxImagesPerMessage != null && attach.length > lim.maxImagesPerMessage) {
@@ -6126,9 +6140,11 @@ async function sscSend() {
       toast('图片总大小超出单条消息上限'); return;
     }
   }
-  // 组装 content 块：文本 + 图片（base64 无前缀）
-  const content = [{ type: 'text', text }]
-    .concat(attach.map(a => ({ type: 'image', mediaType: a.mediaType, data: a.data, name: a.name })));
+  // 组装 content 块：文本（若有）→ 文本文件（文本块注入，所有模型可用）→ 图片（base64 无前缀，仅视觉模型）
+  const content = [];
+  if (text) content.push({ type: 'text', text });
+  for (const f of CHAT.files) content.push({ type: 'text', text: `【文件：${f.name}】（${fmtSize(f.size)}）\n${f.text}` });
+  for (const a of attach) content.push({ type: 'image', mediaType: a.mediaType, data: a.data, name: a.name });
   const rpcId = 'wbp-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   // 乐观渲染用户气泡（pending 态，含图片缩略图）；事件流 user/message 按 source.rpcId 对齐去重
   const el = chatRenderUser({ content }, true);
@@ -6144,8 +6160,9 @@ async function sscSend() {
       content,
       clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     }, rpcId);
-    // 发送成功：此后不可再切换工作模式；清空附件区
+    // 发送成功：此后不可再切换工作模式；清空文件/图片附件区
     CHAT.hasTurn = true;
+    CHAT.files = [];
     CHAT.attach = [];
     renderSscAttach();
     renderSscChips();
@@ -6200,17 +6217,42 @@ function chatPermName(value) {
   return CHAT_PERM_NAMES[cur] || cur;
 }
 
-// ---------- 图片附件预览（输入栏上方 chip 列表） ----------
+// ---------- 附件预览（输入栏上方 chip 列表：文本文件 + 图片） ----------
 function renderSscAttach() {
   const box = document.getElementById('sscAttach');
   if (!box) return;
-  box.innerHTML = CHAT.attach.map((a, i) => `
-    <span class="ssc-atch" title="${esc(a.name)}">
+  const fileHtml = CHAT.files.map((f, i) => `
+    <span class="ssc-atch" title="${esc(f.name)}${f.savedPath ? '（已保存至任务目录 ' + esc(f.savedPath) + '）' : '（仅本次发送，未保存）'}">
+      <span class="ssc-atch-ico">📄</span>
+      <span class="ssc-atch-name">${esc(f.name)}</span>
+      <span class="ssc-atch-size">${fmtSize(f.size)}</span>
+      ${f.savedPath ? '<span class="ssc-atch-save" title="已保存到任务文件夹">✓</span>' : ''}
+      <span class="ssc-atch-x" data-fi="${i}" title="移除">✕</span>
+    </span>`).join('');
+  const imgHtml = CHAT.attach.map((a, i) => `
+    <span class="ssc-atch" title="${esc(a.name)}${a.savedPath ? '（已保存至任务目录 ' + esc(a.savedPath) + '）' : '（仅本次发送，未保存）'}">
       <img src="data:${esc(a.mediaType)};base64,${a.data}" style="width:26px;height:26px;object-fit:cover;border-radius:4px" alt="">
       <span class="ssc-atch-name">${esc(a.name)}</span>
+      ${a.savedPath ? '<span class="ssc-atch-save" title="已保存到任务文件夹">✓</span>' : ''}
       <span class="ssc-atch-x" data-i="${i}" title="移除">✕</span>
     </span>`).join('');
-  box.hidden = !CHAT.attach.length;
+  box.innerHTML = fileHtml + imgHtml;
+  box.hidden = !(CHAT.files.length || CHAT.attach.length);
+}
+
+// 上传文件保存到任务专属目录 uploads/（会话隔离：只进当前任务文件夹，不与他任务混放）；
+// 返回 {fileName,path,size} 或 null（失败不阻塞发送，附件仍以内存态可用）
+async function saveTaskUpload(taskId, payload) {
+  if (!taskId) return null;
+  try {
+    const r = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const j = await r.json();
+    return (j && j.ok) ? j : null;
+  } catch (e) { return null; }
 }
 
 // 单文件读为 base64 附件（剥离 data:...;base64, 前缀）
@@ -6220,12 +6262,63 @@ function sscAttachFile(file) {
     r.onload = () => {
       const m = String(r.result || '').match(/^data:([^;]+);base64,(.*)$/s);
       if (!m) { reject(new Error('bad data url')); return; }
-      CHAT.attach.push({ name: file.name, mediaType: m[1], data: m[2], size: file.size });
+      const item = { name: file.name, mediaType: m[1], data: m[2], size: file.size, savedPath: null };
+      CHAT.attach.push(item);
+      // 异步保存到任务目录 uploads/（成功回填 savedPath 并刷新预览）
+      saveTaskUpload(CHAT.task && CHAT.task.id, { fileName: file.name, encoding: 'base64', data: m[2], mediaType: m[1] })
+        .then((r2) => { if (r2) { item.savedPath = r2.path; renderSscAttach(); } })
+        .catch(() => {});
       resolve();
     };
     r.onerror = () => reject(r.error || new Error('读取失败'));
     r.readAsDataURL(file);
   });
+}
+
+// 文本文件大小上限（文本块注入，避免撑爆上下文）
+const SSC_FILE_MAX_BYTES = 2 * 1024 * 1024;   // 单文件 2 MB
+const SSC_FILE_MAX_TOTAL = 8 * 1024 * 1024;   // 累计 8 MB
+
+// 单文件读为文本附件（文本块注入，所有模型可用）
+function sscAttachTextFile(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const text = String(r.result || '');
+      const item = { name: file.name, size: file.size, kind: file.type || '', text, savedPath: null };
+      CHAT.files.push(item);
+      // 异步保存到任务目录 uploads/（成功回填 savedPath 并刷新预览）
+      saveTaskUpload(CHAT.task && CHAT.task.id, { fileName: file.name, encoding: 'utf8', data: text, mediaType: file.type || 'text/plain' })
+        .then((r2) => { if (r2) { item.savedPath = r2.path; renderSscAttach(); } })
+        .catch(() => {});
+      resolve();
+    };
+    r.onerror = () => reject(r.error || new Error('读取失败'));
+    r.readAsText(file);
+  });
+}
+
+// 模型模态判定（图片上传按钮显隐依据）：调网关 /api/model-modality
+// 仅当判定为支持图片输入（image=true）时才显示图片上传图标；未知/不支持一律隐藏
+async function chatEvalVision(provider, model) {
+  if (!provider || !model) { CHAT.vision = null; updateSscVisionUI(); return; }
+  try {
+    const r = await fetch(`/api/model-modality?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`).then((x) => x.json());
+    CHAT.vision = !!(r && r.image);
+  } catch (e) {
+    CHAT.vision = null; // 网关不可达：保守隐藏图片按钮
+  }
+  updateSscVisionUI();
+}
+
+// 图片上传按钮显隐：仅支持图片输入的模型可见；非视觉模型下丢弃已选图片
+function updateSscVisionUI() {
+  const btn = document.getElementById('sscAttachBtn');
+  if (btn) btn.hidden = !(CHAT.vision === true);
+  if (CHAT.vision !== true && CHAT.attach.length) {
+    CHAT.attach = [];
+    renderSscAttach();
+  }
 }
 
 function renderSscChips() {
@@ -6273,6 +6366,9 @@ async function chatLoadModels() {
   if (CHAT.openToken !== token) return;
   renderSscChips();
   chatApplyModelState();
+  // 模态判定：依据当前模型决定图片上传按钮显隐
+  const cur = CHAT.models && CHAT.models.current;
+  chatEvalVision(cur && cur.provider, cur && cur.model);
 }
 
 function chatApplyModelState() {
@@ -6369,6 +6465,8 @@ async function sscSelectModel(prov, model) {
     renderSscChips();
     chatApplyModelState();
     document.getElementById('sscPop').hidden = true;
+    // 切换模型后重新判定模态：视觉模型显示图片按钮，非视觉模型隐藏并丢弃已选图片
+    chatEvalVision(prov, model);
     toast('模型已切换为 ' + model);
   } catch (e) {
     toast('切换失败：' + e.message);
@@ -6551,6 +6649,8 @@ async function ChatOpen(task, readonly) {
   CHAT.imageLimits = null;
   CHAT.perms = null;
   CHAT.attach = [];
+  CHAT.files = [];
+  CHAT.vision = null;
   CHAT.sscPopKind = 'model';
   CHAT.subscribed = false;
   CHAT.nearBottom = true;
@@ -6560,6 +6660,7 @@ async function ChatOpen(task, readonly) {
   CHAT.loadingHistory = false;
   document.getElementById('ssChatList').innerHTML = '';
   document.getElementById('sscAttach').hidden = true;
+  updateSscVisionUI();
   const inp = document.getElementById('sscInput');
   inp.value = '';
   inp.disabled = !!readonly;
@@ -6610,6 +6711,8 @@ function ChatClose() {
   CHAT.running = false;
   CHAT.pendingRpcIds.clear();
   CHAT.attach = [];
+  CHAT.files = [];
+  CHAT.vision = null;
   CHAT.cmdCatalog = null;
   CHAT.presets = null;
   CHAT.preset = null;
@@ -6617,6 +6720,7 @@ function ChatClose() {
   CHAT.imageLimits = null;
   CHAT.perms = null;
   CHAT.sscPopKind = 'model';
+  updateSscVisionUI();
   const attachBox = document.getElementById('sscAttach');
   if (attachBox) { attachBox.innerHTML = ''; attachBox.hidden = true; }
   document.getElementById('sscMenu').hidden = true;
@@ -6707,6 +6811,23 @@ function ChatClose() {
       sscSelectModel(it.dataset.prov, it.dataset.model);
     }
   });
+  // 文件附件（文本块注入）：按钮唤起文件选择 → 逐文件读文本 → 预览
+  document.getElementById('sscFileBtn').addEventListener('click', () => {
+    document.getElementById('sscFileInput').click();
+  });
+  document.getElementById('sscFileInput').addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files || []);
+    e.target.value = ''; // 清空以允许重复选择同一文件
+    let total = CHAT.files.reduce((n, f) => n + (f.size || 0), 0);
+    for (const f of files) {
+      if (f.size > SSC_FILE_MAX_BYTES) { toast(`文件「${f.name}」过大（上限 2 MB，文本注入）`); continue; }
+      total += f.size;
+      if (total > SSC_FILE_MAX_TOTAL) { toast('文件附件总大小超出上限（8 MB）'); break; }
+      try { await sscAttachTextFile(f); }
+      catch (err) { toast('文件读取失败：' + (f && f.name ? f.name : '')); }
+    }
+    renderSscAttach();
+  });
   // 图片附件：按钮唤起文件选择 → 逐文件读 base64 → 预览
   document.getElementById('sscAttachBtn').addEventListener('click', () => {
     document.getElementById('sscAttachInput').click();
@@ -6720,11 +6841,12 @@ function ChatClose() {
     }
     renderSscAttach();
   });
-  // 附件预览移除（✕ 委托）
+  // 附件预览移除（✕ 委托）：data-fi=文本文件 / data-i=图片
   document.getElementById('sscAttach').addEventListener('click', (e) => {
     const x = e.target.closest('.ssc-atch-x');
     if (!x) return;
-    CHAT.attach.splice(Number(x.dataset.i), 1);
+    if (x.dataset.fi !== undefined) CHAT.files.splice(Number(x.dataset.fi), 1);
+    else CHAT.attach.splice(Number(x.dataset.i), 1);
     renderSscAttach();
   });
   document.addEventListener('click', (e) => {
@@ -8798,6 +8920,7 @@ function editCustomProvider(route) {
   document.getElementById('scCustomBaseURL').value = p.baseURL || '';
   document.getElementById('scCustomApi').value = p.api || 'openai-completions';
   document.getElementById('scCustomModels').value = ((p.models || []).map((m) => m.id)).join(', ');
+  document.getElementById('scCustomVision').checked = Array.isArray(p.defaultInput) && p.defaultInput.includes('image');
   document.getElementById('scCustomKey').value = '';
   document.getElementById('scCustomKey').placeholder = '已配置，输入新值覆盖；留空保留';
   document.getElementById('scCustomAddSummary').textContent = `编辑自定义 Provider：${c.route}`;
@@ -8809,6 +8932,7 @@ function editCustomProvider(route) {
 
 function cancelEditCustomProvider() {
   ['scCustomRoute', 'scCustomName', 'scCustomBaseURL', 'scCustomKey', 'scCustomModels'].forEach((id) => { document.getElementById(id).value = ''; });
+  document.getElementById('scCustomVision').checked = false;
   document.getElementById('scCustomKey').placeholder = 'sk-...';
   document.getElementById('scCustomAddSummary').textContent = '＋ 添加自定义 Provider';
   document.getElementById('scCustomCancelEdit').hidden = true;
@@ -8860,6 +8984,8 @@ async function saveCustomProvider() {
     const keyRef = deriveKeyRef(route);
     const profile = { apiKeyEnv: keyRef, displayName, baseURL, api };
     if (models.length) profile.models = models;
+    // 多模态声明：勾选则声明 provider 级默认输入模态（自定义端点无目录条目，网关据此判定支持图片输入）
+    profile.defaultInput = document.getElementById('scCustomVision').checked ? ['text', 'image'] : ['text'];
     const res = await wbRpc('settings.mutate', { ns: 'llm-pi-ai', ops: [{ op: 'set', path: ['providers', route], value: profile }], expectedRevision: SSC.piAi.revision });
     SSC.piAi.revision = res.revision;
     SSC.piAi.value = res.value;

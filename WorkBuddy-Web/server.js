@@ -308,7 +308,8 @@ function shutdown(reason, code = 0) {
 // 本地业务 mock 前缀（不转发）
 const LOCAL_API_PREFIXES = [
   '/api/workspaces', '/api/tasks', '/api/archive', '/api/wiki',
-  '/api/resources', '/api/schedule', '/api/search', '/api/plugin-community'
+  '/api/resources', '/api/schedule', '/api/search', '/api/plugin-community',
+  '/api/model-modality'
 ];
 const isLocalApi = (p) => p === '/api/workspaces/sync-harness' || LOCAL_API_PREFIXES.some((pre) => p === pre || p.startsWith(pre + '/'));
 
@@ -1201,6 +1202,69 @@ function parseUrl(url) {
   return { path: p, params };
 }
 
+// ---------- 模型模态判定（对话窗口图片上传显隐的判定依据） ----------
+// harness 无 RPC 可查询模型 inputModalities，且 session.models 不透传该字段；
+// 网关侧按与 harness llm-pi-ai 一致的优先级判定「模型是否支持图片输入」：
+//   profile 模型级声明（models 条目 input / modelOverrides.input）> pi-ai 内置目录（getBuiltinModels）> profile.defaultInput
+// DeepSeek 官方适配器硬编码 inputModalities=['text']（llm-deepseek/src/adapter.ts），永远不支持图片。
+let piaiModCache = null; // { mod } | null（懒加载 pi-ai 内置目录；未安装/加载失败为 null）
+function resolvePiAiCatalog() {
+  if (piaiModCache !== null) return piaiModCache.mod || null;
+  piaiModCache = null;
+  try {
+    // pi-ai 位于 pnpm 虚拟 store：@earendil-works+pi-ai@<hash>/node_modules/@earendil-works/pi-ai
+    const pnpmDir = path.join(HARNESS_DIR, 'node_modules', '.pnpm');
+    const dirs = fs.readdirSync(pnpmDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && /^@earendil-works\+pi-ai@/.test(d.name))
+      .sort();
+    for (const d of dirs) {
+      const entry = path.join(pnpmDir, d.name, 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'providers', 'all.js');
+      if (fs.existsSync(entry)) {
+        try {
+          // Node >= 22.19 支持 require(esm)；与智能体同一份 pi-ai 目录数据，判定结果与 harness 一致
+          const mod = require(entry);
+          if (mod && typeof mod.getBuiltinModels === 'function') { piaiModCache = { mod }; break; }
+        } catch (e) { /* 单目录损坏则尝试下一个 */ }
+      }
+    }
+  } catch (e) { /* 未找到 pi-ai（依赖未安装）→ 降级为仅凭配置声明判定 */ }
+  return piaiModCache ? piaiModCache.mod : null;
+}
+
+const piaiImageIn = (arr) => Array.isArray(arr) && arr.includes('image');
+
+// 判定 provider/model 是否支持图片输入（返回布尔；判定依据缺失时保守返回 false）
+function modelSupportsImage(provider, model, piAiValue) {
+  const providers = (piAiValue && piAiValue.providers) || {};
+  const profile = providers[provider];
+  const fromCatalog = () => {
+    const mod = resolvePiAiCatalog();
+    if (!mod) return null;
+    try {
+      const list = mod.getBuiltinModels(provider) || [];
+      const m = (Array.isArray(list) ? list : []).find((x) => x && x.id === model);
+      if (m && Array.isArray(m.input) && m.input.length) return piaiImageIn(m.input);
+    } catch (e) { /* 目录查询异常按未声明处理 */ }
+    return null;
+  };
+  if (profile) {
+    // 1) 模型级声明（models 条目 + modelOverrides 覆盖；仅当非空数组才采信，与 catalog.ts declaredInput 语义一致）
+    const entry = ((profile.models || []).find((m) => m && m.id === model)) || {};
+    const override = (profile.modelOverrides && profile.modelOverrides[model]) || {};
+    const declared = override.input || entry.input;
+    if (Array.isArray(declared) && declared.length) return piaiImageIn(declared);
+    // 2) pi-ai 内置目录（目录供应商的视觉模型由目录声明）
+    const cat = fromCatalog();
+    if (cat !== null) return cat;
+    // 3) provider 级默认（本地/自定义端点无目录条目时由用户勾选声明）
+    if (Array.isArray(profile.defaultInput) && profile.defaultInput.length) return piaiImageIn(profile.defaultInput);
+    return false;
+  }
+  // provider 未在 llm-pi-ai 配置（deepseek 官方等）：目录兜底，DeepSeek 目录/适配器均为纯文本
+  const cat = fromCatalog();
+  return cat === true;
+}
+
 async function handleLocalApi(req, res, urlPath, params) {
   // 智能体同步探测
   if (urlPath === '/api/workspaces/sync-harness' && req.method === 'POST') {
@@ -1305,6 +1369,37 @@ async function handleLocalApi(req, res, urlPath, params) {
     const task = db.tasks.find((t) => t.id === id);
     if (!task) return sendJson(res, 404, { error: { message: '任务不存在' } });
     return sendJson(res, 200, { files: taskArtifactFiles(task) });
+  }
+  // 上传文件保存到任务专属目录 uploads/（会话隔离：附件只进当前任务文件夹，不与他任务混放）
+  // body: { fileName, encoding: 'base64'|'utf8', data, mediaType? } → 重名自动加序号
+  if (urlPath.match(/^\/api\/tasks\/[^/]+\/upload$/) && req.method === 'POST') {
+    const id = urlPath.split('/')[3];
+    const task = db.tasks.find((t) => t.id === id);
+    if (!task) return sendJson(res, 404, { error: { message: '任务不存在' } });
+    await ensureTaskDir(task);
+    const body = await readBody(req);
+    const rawName = String(body.fileName || '').trim();
+    const encoding = body.encoding === 'utf8' ? 'utf8' : 'base64';
+    const data = String(body.data || '');
+    if (!rawName) return sendJson(res, 400, { error: { message: '缺少 fileName' } });
+    if (!data) return sendJson(res, 400, { error: { message: '缺少文件内容' } });
+    // 文件名消毒：仅取 basename 并剔除危险字符，防目录穿越
+    let safe = path.basename(rawName).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim();
+    if (!safe || safe === '.' || safe === '..') safe = 'attachment';
+    if (safe.length > 120) { const ext = path.extname(safe); safe = safe.slice(0, Math.max(1, 120 - ext.length)) + ext; }
+    const uploadDir = path.join(task.dir, 'uploads');
+    try { fs.mkdirSync(uploadDir, { recursive: true }); } catch (e) { return sendJson(res, 500, { error: { message: '创建上传目录失败：' + e.message } }); }
+    // 重名自动加序号（1-<name>），避免覆盖既有附件
+    let name = safe;
+    for (let n = 1; fs.existsSync(path.join(uploadDir, name)); n++) name = `${n}-${safe}`;
+    let buf;
+    try {
+      buf = encoding === 'utf8' ? Buffer.from(data, 'utf8') : Buffer.from(data, 'base64');
+    } catch (e) { return sendJson(res, 400, { error: { message: '文件内容解码失败' } }); }
+    const MAX_UPLOAD = 16 * 1024 * 1024; // 服务端防御上限 16 MB
+    if (buf.length > MAX_UPLOAD) return sendJson(res, 400, { error: { message: '文件过大（上限 16 MB）' } });
+    try { fs.writeFileSync(path.join(uploadDir, name), buf); } catch (e) { return sendJson(res, 500, { error: { message: '保存文件失败：' + e.message } }); }
+    return sendJson(res, 200, { ok: true, fileName: name, path: `uploads/${name}`, size: buf.length });
   }
   // 任务目录真实文件树：目录缺失 → {tree:null}；存在 → 递归扫描（限深 4，跳过 . 开头目录）
   if (urlPath.match(/^\/api\/tasks\/[^/]+\/tree$/) && req.method === 'GET') {
@@ -1924,6 +2019,23 @@ function findArchiveSessionDir(groupName, taskId) {
     const id = urlPath.split('/').pop();
     db.pluginCommunity = db.pluginCommunity.filter((p) => p.id !== id);
     return sendJson(res, 200, { success: true });
+  }
+
+  // 模型模态判定：GET /api/model-modality?provider=<id>&model=<id> → { provider, model, image }
+  // 对话窗口据此决定是否显示图片上传图标（仅支持图片输入的模型才显示）
+  if (urlPath === '/api/model-modality' && req.method === 'GET') {
+    const provider = String(params.provider || '');
+    const model = String(params.model || '');
+    if (!provider || !model) return sendJson(res, 400, { ok: false, error: { message: '缺少 provider / model 参数' } });
+    try {
+      const d = await harnessRpc('settings.describe', {});
+      const piNs = (d.namespaces || []).find((n) => n.ns === 'llm-pi-ai');
+      const image = modelSupportsImage(provider, model, (piNs && piNs.value) || {});
+      return sendJson(res, 200, { provider, model, image });
+    } catch (e) {
+      // settings 读取失败（智能体未就绪等）→ 保守判定不支持图片
+      return sendJson(res, 200, { provider, model, image: false, degraded: true });
+    }
   }
 
   return null; // 未匹配本地路由
