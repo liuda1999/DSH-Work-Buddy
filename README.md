@@ -1,8 +1,8 @@
-# DSH Work Buddy
+﻿# DSH Work Buddy
 
 DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集成了任务管理控制台（WorkBuddy-Web）、DeepSeek Harness 智能体组件和 LLM Wiki 文档组件。
 
-- **版本**：`0.1.5`
+- **版本**：`0.1.6`
 - **项目标识**：见根目录 [`VERSION`](./VERSION)
 
 ---
@@ -10,7 +10,7 @@ DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集�
 ## 目录结构
 
 ```
-DSH-WorkBuddy-0.1.5/
+DSH-WorkBuddy-0.1.6/
 ├── VERSION                 # 项目顶层版本号
 ├── README.md               # 本文件
 ├── start.bat               # 一键启动脚本（Web + 智能体）
@@ -30,7 +30,7 @@ DSH-WorkBuddy-0.1.5/
 
 - **入口文件**：`WorkBuddy-Web/index.html`
 - **一体化服务**：`WorkBuddy-Web/server.js`（固定端口 `127.0.0.1:8765`）
-- **版本**：`0.1.5`
+- **版本**：`0.1.6`
 
 ### 2. deepseek-harness
 
@@ -129,7 +129,7 @@ pnpm docs:preview
 本项目分发包为根目录下的：
 
 ```
-DSH-WorkBuddy-0.1.5.zip
+DSH-WorkBuddy-0.1.6.zip
 ```
 
 该压缩包已排除以下内容：
@@ -147,8 +147,8 @@ DSH-WorkBuddy-0.1.5.zip
 
 ## 版本策略
 
-- 整个 DSH Work Buddy 项目对外版本为 `0.1.5`（见 `VERSION`）。
-- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.5`。
+- 整个 DSH Work Buddy 项目对外版本为 `0.1.6`（见 `VERSION`）。
+- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.6`。
 - `deepseek-harness`、`llm-wiki` 等组件保留其自身原有版本，不强制统一。
 
 ---

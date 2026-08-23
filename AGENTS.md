@@ -46,6 +46,7 @@ e:\worke
 
 | 页面 | data-page | 功能 |
 |---|---|---|
+| **导航路由** | 全局 | **hash 路由**：切页更新 URL（`#/tasks` 等），刷新/前进后退回到对应页；「团队协作」为占位项（不切换） |
 | **任务管理** | `tasks` | 任务看板（今日/进行中/已完成/逾期分组）、KPI 与环比、左侧工作区侧栏（含各工作区任务数徽标）、点击任务打开**会话弹窗**（自研对话组件：输入栏 + 文件/图片上传 + 模型/模式/权限 chips + 斜杠命令 + 只读拦截条 + 设定新期限） |
 | **项目总览** | `overview` | 全工作区任务统计、分区概览、搜索；「查看文件」玻璃抽屉 |
 | **文件归档** | `archive` | 归档组管理 + 归档会话卡片（文件大小 MB / Token 万/亿，两位小数）；点卡片打开详情弹窗（左：按扩展名分类的文件列表，可预览/下载；右：对话记录） |
@@ -73,7 +74,9 @@ e:\worke
    - Wiki 知识库：**仓库清单持久化**（`data/wiki/repos.json`，内置「本地文档库」恒在；`GET/POST /api/wiki/repos` 建仓）；文档**归仓落盘**（lite 模式 `data/wiki/<仓库>/<标题>.md`，llm-wiki 模式 `sources/`；`POST /api/wiki/write` 新建、`PUT /api/wiki/doc` 编辑可移动仓库并清理旧文件）；listWikiDocs 按目录推断 category/repoSlug。
    - Wiki 图谱：扫描文档构建 document/section 节点 + contains/part_of/mentions 边，按「文档集合指纹」自动失效重建，图数据按 (category, repo) 隔离。
    - 模型模态判定：`GET /api/model-modality?provider=&model=` → `{image}`（对话窗口图片按钮显隐依据）。
-   - 插件社区：`{presets: 预置 9 项, user: 自建收藏}`。
+   - 插件社区：`{presets: 预置 9 项, user: 自建收藏}`；**用户收藏落盘**（`data/plugin-community.json`，重启恢复）。
+   - 归档：组定位兼容 **id 或 name**（前端下拉提交组名）；归档会话落盘 `<组>/<任务>_<id后6位>/`。
+   - 任务：`agentTemplate`（智能体身份）随 PATCH 持久化 `task.json`，重启恢复；前端关闭弹窗重开经 openSessionModal/renderSwAgentCard 双层兜底同步最新身份。
 2. **RPC 转发**（`/api/<method>` → harness 3080，envelope `{type:'client-request', rpcId, method, payload}`）：`session.*`、`workspace.*`、`llm.*`、`credentials.*`、`settings.*`、`agentPreset.*`、`skill.*`、`commands.*` 等全量透传。
    - **必须改写 Origin 头为 `http://127.0.0.1:3080`**（dsh 连接围栏要求 Origin 与 Host 匹配，否则 403）。
 3. **WS 桥**：`/api/events.mux`（会话事件流，Origin 同样改写）。
@@ -138,6 +141,11 @@ start.bat        # 依赖/构建（首次较慢，幂等）→ 端口检查 → 
 | `_test_probe_upload.mjs` | 对话上传探针（模态显隐 6 项 + 文件附件 14 项 + 后端模态 6 项 + 落盘隔离 11 项） |
 | `_test_probe_wiki_repo.mjs` / `_test_probe_wiki_pane.mjs` / `_test_probe_wiki_empty_repo.mjs` | WIKI 建仓/归仓/编辑移动/空仓库卡片探针 |
 | `_test_probe_modality_custom.mjs` | 自定义 Provider 模态声明（真实写入→查询→清理） |
+| `_test_probe_agent_bind/ui/fallback.mjs` | 智能体身份持久化链路 + 关闭重开渲染 + 兜底同步 |
+| `_test_probe_archive_group.mjs` | 归档组修复（按 name/id 落盘到指定组，非默认组） |
+| `_test_probe_nav.mjs` | 导航 hash 路由（URL 变化 + 刷新恢复） |
+| `_test_probe_misc.mjs` | 插件社区增删 + 工作区创建/删除链路 |
+| `_audit_ui.mjs` | 静态审计：事件块网络请求/加载态/错误提示扫描 |
 | `_sanitize_check.mjs` | 打包前脱敏检查（必跑） |
 
 回归基线：startup_qc 17/17、e2e_chat 18/18、smoke、verify_v2 25/25 等全部通过。

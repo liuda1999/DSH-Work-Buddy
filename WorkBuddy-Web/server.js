@@ -512,6 +512,21 @@ const PLUGIN_COMMUNITY_SEED = [
   { id: 'pc-ollama', name: 'Ollama', url: 'https://github.com/ollama/ollama', tag: '模型', scale: '100k+ Stars', color: '#7C3AED', desc: '本地大模型运行社区：一行命令拉起模型，插件与工具生态完善。' },
   { id: 'pc-modelscope', name: '魔搭 ModelScope', url: 'https://modelscope.cn', tag: '社区', scale: '中文社区', color: '#FF5A00', desc: '阿里达摩院 AI 开源社区：模型、数据集与 Agent 应用，中文活跃度高。' }
 ];
+// 用户自建收藏持久化（data/plugin-community.json，重启恢复；预置 9 项为代码级恒在）
+const PLUGIN_COMMUNITY_FILE = path.join(DATA_DIR, 'plugin-community.json');
+function loadPluginCommunity() {
+  try {
+    const j = JSON.parse(fs.readFileSync(PLUGIN_COMMUNITY_FILE, 'utf8'));
+    db.pluginCommunity = Array.isArray(j) ? j.filter((p) => p && p.id) : [];
+  } catch (e) { db.pluginCommunity = []; }
+}
+function savePluginCommunity() {
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    fs.writeFileSync(PLUGIN_COMMUNITY_FILE, JSON.stringify(db.pluginCommunity, null, 2), 'utf8');
+  } catch (e) { /* 写盘失败不阻塞收藏操作 */ }
+}
+loadPluginCommunity();
 
 function nextId(prefix) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -1717,8 +1732,10 @@ async function handleLocalApi(req, res, urlPath, params) {
     const body = await readBody(req);
     const task = db.tasks.find((t) => t.id === body.taskId);
     if (!task) return sendJson(res, 404, { error: { message: '任务不存在' } });
-    // 组定位：groupId 对应 db.archiveGroups 的 name；磁盘组（disk_ 前缀）解析目录名兜底
-    const group = db.archiveGroups.find((g) => g.id === body.groupId);
+    // 组定位：groupId 优先按 id 匹配；再按 name 匹配（前端归档下拉 option value 为组名）；
+    // 磁盘组（disk_ 前缀）解析目录名兜底；均未命中才回退默认组
+    const group = db.archiveGroups.find((g) => g.id === body.groupId)
+      || db.archiveGroups.find((g) => g.name === body.groupId);
     let groupName = group && group.name;
     if (!groupName && typeof body.groupId === 'string' && body.groupId.startsWith('disk_')) groupName = body.groupId.slice(5);
     if (!groupName) groupName = '默认组';
@@ -2231,11 +2248,13 @@ function findArchiveSessionDir(groupName, taskId) {
     const body = await readBody(req);
     const item = { id: nextId('pc'), user: true, ...body };
     db.pluginCommunity.push(item);
+    savePluginCommunity(); // 用户收藏落盘，网关重启不丢失
     return sendJson(res, 200, item);
   }
   if (urlPath.startsWith('/api/plugin-community/') && req.method === 'DELETE') {
     const id = urlPath.split('/').pop();
     db.pluginCommunity = db.pluginCommunity.filter((p) => p.id !== id);
+    savePluginCommunity(); // 同步落盘，重启后删除状态保持
     return sendJson(res, 200, { success: true });
   }
 
