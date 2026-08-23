@@ -5237,6 +5237,12 @@ function applyReadonlyBar(task) {
 }
 function openSessionModal(task, options = {}) {
   if (!task) return;
+  // 兜底：传入任务对象陈旧（缺 agentTemplate）时，用 WB.tasks 中同 id 且更完整的新对象，
+  // 避免「关闭后重开」使用旧引用导致身份/状态丢失；WB.tasks 对象不更新则不覆盖
+  if (WB.tasks && !task.agentTemplate) {
+    const fresh = WB.tasks.find(x => x && x.id === task.id);
+    if (fresh && fresh.agentTemplate) task = fresh;
+  }
   SS.task = task;
   SS.readonly = Boolean(options.readonly);
   // 头部信息：任务名 + 标签 chip（label.color 圆点）+ 期限文字
@@ -6907,7 +6913,14 @@ function initSessionWorkbench(task) {
 
 // ---------- 左栏：智能体身份卡 ----------
 function renderSwAgentCard() {
-  const at = SW.task && SW.task.agentTemplate;
+  // 兜底：任务对象未带 agentTemplate 时，从 WB.tasks 中同 id 任务同步（覆盖列表重建后引用陈旧场景，
+  // 避免「关闭重开后身份消失」）；仍无则按空态渲染
+  const t = SW.task;
+  if (t && !t.agentTemplate && WB.tasks) {
+    const fresh = WB.tasks.find(x => x && x.id === t.id);
+    if (fresh && fresh.agentTemplate) t.agentTemplate = fresh.agentTemplate;
+  }
+  const at = t && t.agentTemplate;
   const empty = document.getElementById('swAgentEmpty');
   const filled = document.getElementById('swAgentFilled');
   if (at) {
@@ -10539,7 +10552,7 @@ document.querySelectorAll('.tab').forEach(t => {
   });
 });
 
-// 导航切换 + 页面路由骨架
+// 导航切换 + hash 路由：切页更新 URL（#/page），刷新/前进后退按 hash 回到对应页
 const PAGE_TITLES = {
   tasks: '任务管理',
   overview: '项目总览',
@@ -10551,29 +10564,47 @@ const PAGE_TITLES = {
   team: '团队协作'
 };
 const topbarTitleEl = document.querySelector('.topbar .title');
+// 页面切换唯一入口：切 DOM + 按需拉数据 + 同步 URL hash（fromHash 时跳过 hash 赋值防循环）
+function applyPage(page, fromHash = false) {
+  if (!PAGE_TITLES[page]) page = 'tasks';
+  document.querySelectorAll('.nav-item').forEach(x => x.classList.remove('active'));
+  const nav = document.querySelector('.nav-item[data-page="' + page + '"]');
+  if (nav) nav.classList.add('active');
+  document.querySelectorAll('.page').forEach(p => {
+    p.hidden = (p.id !== 'page-' + page);
+  });
+  // 智能详情右栏仅任务管理页显示
+  const appEl = document.querySelector('.app');
+  if (appEl) appEl.classList.toggle('no-detail', page !== 'tasks');
+  if (topbarTitleEl && PAGE_TITLES[page]) topbarTitleEl.textContent = PAGE_TITLES[page];
+  // 进入对应页面时按需拉取/刷新数据
+  if (page === 'overview') loadOverview();
+  if (page === 'archive') loadArchivePage();
+  if (page === 'schedule') loadSchedule();
+  if (page === 'resources') loadResourcesPage();
+  if (page === 'plugin-community') loadPluginCommunity();
+  if (page === 'settings') loadSettingsPage();
+  if (!fromHash && location.hash !== '#/' + page) location.hash = '#/' + page;
+}
+// 前进/后退/手动改 URL → 同步页面
+window.addEventListener('hashchange', () => {
+  const page = String(location.hash || '').replace(/^#\/?/, '');
+  if (PAGE_TITLES[page]) applyPage(page, true);
+});
 document.querySelectorAll('.nav-item').forEach(n => {
   n.addEventListener('click', () => {
     // 占位项（如「团队协作」）：点击后不切换 active、无任何界面变化
     if (n.dataset.inert === 'true') return;
     const page = n.dataset.page;
     if (!page) return;
-    document.querySelectorAll('.nav-item').forEach(x => x.classList.remove('active'));
-    n.classList.add('active');
-    document.querySelectorAll('.page').forEach(p => {
-      p.hidden = (p.id !== 'page-' + page);
-    });
-    // 智能详情右栏仅任务管理页显示
-    document.querySelector('.app').classList.toggle('no-detail', page !== 'tasks');
-    if (topbarTitleEl && PAGE_TITLES[page]) topbarTitleEl.textContent = PAGE_TITLES[page];
-    // 进入对应页面时按需拉取/刷新数据
-    if (page === 'overview') loadOverview();
-    if (page === 'archive') loadArchivePage();
-    if (page === 'schedule') loadSchedule();
-    if (page === 'resources') loadResourcesPage();
-    if (page === 'plugin-community') loadPluginCommunity();
-    if (page === 'settings') loadSettingsPage();
+    applyPage(page);
   });
 });
+// 初始路由：刷新/直达时按 hash 回到对应页面（默认任务管理）
+(function initRoute() {
+  const page = String(location.hash || '').replace(/^#\/?/, '');
+  applyPage(PAGE_TITLES[page] ? page : 'tasks', true);
+})();
 
 // 任务行选中与详情联动已改为数据驱动（见上方 selectTask / taskGroups 事件委托）
 

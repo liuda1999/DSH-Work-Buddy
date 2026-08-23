@@ -1,8 +1,9 @@
-{
+﻿{
   "name": "workbuddy-web",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "DSH Work Buddy 任务管理控制台前端",
   "private": true,
   "author": "",
   "license": "MIT"
 }
+
