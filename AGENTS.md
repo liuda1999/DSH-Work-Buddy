@@ -116,6 +116,11 @@ start.bat        # 依赖/构建（首次较慢，幂等）→ 端口检查 → 
 或直接：`cd WorkBuddy-Web && node server.js`（自动拉起智能体 3080 + 检查 Wiki + 安装技能）。
 就绪标志：网关日志出现「dsh 智能体服务就绪」「Wiki 文档库就位」；访问 `http://127.0.0.1:8765`。
 
+> **start.bat 编码要求（重要）**：批处理必须以 **UTF-8 BOM + CRLF 换行**保存（.gitattributes 已强制 `*.bat eol=crlf`）。
+> 若文件被保存为无 BOM UTF-8 或 LF 换行，中文 Windows（GBK 代码页）下 cmd 解析会行错乱
+> （`xxx is not recognized as an internal or external command`、banner 乱码），启动直接失败。
+> 修改 start.bat 后请用 `node -e "..."` 或编辑器以 UTF-8 BOM + CRLF 保存，勿用 LF。
+
 ### 7.2 关闭
 - 在启动终端按 `Ctrl+C`（或结束 `node server.js`）：网关与智能体子进程**同步关闭**，端口 8765/3080 一并释放。
 - 若残留孤儿 3080（异常强杀）：启动新实例会提示「检测到外部/遗留智能体实例」，此时 `taskkill /F /PID <pid>` 或重启机器清理。
@@ -138,6 +143,8 @@ start.bat        # 依赖/构建（首次较慢，幂等）→ 端口检查 → 
 回归基线：startup_qc 17/17、e2e_chat 18/18、smoke、verify_v2 25/25 等全部通过。
 
 ### 7.4 常见故障排查
+- **start.bat 报 `xxx is not recognized` 或中文乱码**：文件被存成无 BOM UTF-8 / LF 换行。用 UTF-8 BOM + CRLF 重新保存（或 `git checkout -- start.bat` 恢复）。
+- **首次启动安装依赖失败**：pnpm 不在 PATH 时走 corepack / `npx pnpm@11.7.0` 兜底（需网络）；确保网络可用或先手动 `corepack enable`。
 - **端口 8765 被占**：网关启动即报「端口已被占用」并退出 → 关闭旧实例。
 - **端口 3080 被占（孤儿/外部）**：网关日志提示复用；若实例异常，清理 3080 后重启。
 - **对话弹窗提示「智能体未连接/等待服务启动」**：网关 RPC 失败会触发自愈拉起（约 10s 冷却），前端 waitHarnessReady 轮询等待；仍失败查 `node server.js` 终端日志。
