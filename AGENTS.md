@@ -1,7 +1,7 @@
 # AGENTS.md — DSH Work Buddy 项目指南与运维手册
 
 > 本文件是智能体读取的项目总纲：项目是什么、由哪些组件构成、每部分如何运作、如何启动与运维。
-> 项目版本：**v0.1.5**（见根目录 `VERSION`）。修改本项目时请先阅读本节与对应模块章节，遵循末尾「项目约定」。
+> 项目版本：**v0.1.7**（见根目录 `VERSION`）。修改本项目时请先阅读本节与对应模块章节，遵循末尾「项目约定」。
 
 ---
 
@@ -24,7 +24,7 @@
 
 ```
 e:\worke
-├── VERSION                 # 项目顶层版本号（当前 0.1.5）
+├── VERSION                 # 项目顶层版本号（当前 0.1.7）
 ├── README.md               # 对外说明
 ├── start.bat               # 一键启动（Windows）：依赖/构建（幂等）→ 端口检查 → 启动 Web + 拉起智能体
 ├── start.sh                # 一键启动（macOS/Linux）：等价 bash 逻辑，首次运行先 chmod +x
@@ -141,6 +141,11 @@ start.bat        # Windows：依赖/构建（首次较慢，幂等）→ 端口�
 | `_test_verify_v2.mjs` / `_test_verify_chat.mjs` / `_test_verify_perm.mjs` / `_test_verify_p2/p3b/p4.mjs` | 功能回归套件 |
 | `_test_probe_*.mjs` | 功能实证探针（图谱/设置中心/归档/插件社区/卡片格式等） |
 | `_test_probe_upload.mjs` | 对话上传探针（模态显隐 6 项 + 文件附件 14 项 + 后端模态 6 项 + 落盘隔离 11 项） |
+| `_test_probe_agent_delete.mjs` | 智能体模板删除不复活（DELETE 同步删记忆目录 + 孤儿扫描不捞回，7/7） |
+| `_test_probe_agent_seed_recover.mjs` | seed 预置目录（tpl-preset-*）孤儿找回排除验证（6/6） |
+| `_test_probe_archive_files2.mjs` | 归档文件列表含系统档案（AGENTS.md/MEMORY.md/task.json）+ 隐藏文件排除（13/13） |
+| `_test_probe_detail_panel.mjs` | 智能详情面板字段修复（label 持久化/fileCount/openedAt/轮数链路，7/7） |
+| `_test_probe_wiki_graph_isolate.mjs` | Wiki 知识图谱仓库隔离（节点无交集、无跨仓库边，5/5） |
 | `_test_probe_wiki_repo.mjs` / `_test_probe_wiki_pane.mjs` / `_test_probe_wiki_empty_repo.mjs` | WIKI 建仓/归仓/编辑移动/空仓库卡片探针 |
 | `_test_probe_modality_custom.mjs` | 自定义 Provider 模态声明（真实写入→查询→清理） |
 | `_test_probe_agent_bind/ui/fallback.mjs` | 智能体身份持久化链路 + 关闭重开渲染 + 兜底同步 |

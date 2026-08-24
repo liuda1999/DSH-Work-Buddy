@@ -2,7 +2,7 @@
 
 DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集成了任务管理控制台（WorkBuddy-Web）、DeepSeek Harness 智能体组件和 LLM Wiki 文档组件。
 
-- **版本**：`0.1.6`
+- **版本**：`0.1.7`
 - **项目标识**：见根目录 [`VERSION`](./VERSION)
 
 ---
@@ -10,7 +10,7 @@ DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集�
 ## 目录结构
 
 ```
-DSH-WorkBuddy-0.1.6/
+DSH-WorkBuddy-0.1.7/
 ├── VERSION                 # 项目顶层版本号
 ├── README.md               # 本文件
 ├── start.bat               # 一键启动脚本（Windows，Web + 智能体）
@@ -31,7 +31,7 @@ DSH-WorkBuddy-0.1.6/
 
 - **入口文件**：`WorkBuddy-Web/index.html`
 - **一体化服务**：`WorkBuddy-Web/server.js`（固定端口 `127.0.0.1:8765`）
-- **版本**：`0.1.6`
+- **版本**：`0.1.7`
 
 ### 2. deepseek-harness
 
@@ -137,7 +137,7 @@ pnpm docs:preview
 本项目分发包为根目录下的：
 
 ```
-DSH-WorkBuddy-0.1.6.zip
+DSH-WorkBuddy-0.1.7.zip
 ```
 
 该压缩包已排除以下内容：
@@ -155,9 +155,18 @@ DSH-WorkBuddy-0.1.6.zip
 
 ## 版本策略
 
-- 整个 DSH Work Buddy 项目对外版本为 `0.1.6`（见 `VERSION`）。
-- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.6`。
+- 整个 DSH Work Buddy 项目对外版本为 `0.1.7`（见 `VERSION`）。
+- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.7`。
 - `deepseek-harness`、`llm-wiki` 等组件保留其自身原有版本，不强制统一。
+
+### v0.1.7 更新要点
+
+- **跨平台**：支持 macOS / Linux 运行（`start.sh` 一键启动；网关优雅关闭平台分支）。
+- **智能体管理**：模板删除彻底生效（定义 + 记忆目录一并清除）；对话后重启不再出现「被找回」的 seed 预置模板。
+- **文件归档**：归档弹窗文件列表包含任务目录全部文件（含 AGENTS.md / MEMORY.md / task.json），仅排除隐藏文件。
+- **智能详情面板**：补齐标签、会话创建时间、对话轮数、会话文件数；移除冗余的「创建于/完成于」描述行。
+- **工作区卡片**：支持可选渐变色背景（8 个预制渐变，localStorage 持久化）。
+- **Wiki 知识图谱**：严格按仓库隔离，不同仓库文档不再错误关联。
 
 ---
 
