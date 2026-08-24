@@ -1106,23 +1106,24 @@ function scanTreeDir(dir, depth) {
   return out;
 }
 
-// 拍平 scanTreeDir 嵌套树为文件清单（rel 用正斜杠含子目录；跳过档案文件与 . 开头文件）
-// 归档/文件列表只关心对话产物：AGENTS.md、MEMORY.md、task.json 属系统档案，不列入
-const TASK_META_FILES = ['AGENTS.md', 'MEMORY.md', TASK_FILE];
+// 拍平 scanTreeDir 嵌套树为文件清单（rel 用正斜杠含子目录）
+// 归档文件列表包含任务目录全部可见文件（含 AGENTS.md/MEMORY.md/task.json 系统档案，
+// 它们也是该任务的对话产物）；仅排除 . 开头隐藏文件（如 .env），防敏感信息进归档。
+// 目录层面的 . 开头目录由 scanTreeDir 跳过（.workbuddy/ 等 dsh 内部状态不进列表）。
 function flattenTreeFiles(entries, rel, out) {
   for (const ent of entries || []) {
     const relName = rel ? rel + '/' + ent.name : ent.name;
     if (ent.type === 'dir') {
       flattenTreeFiles(ent.children, relName, out);
     } else if (ent.type === 'file') {
-      if (ent.name.startsWith('.') || TASK_META_FILES.includes(ent.name)) continue;
+      if (ent.name.startsWith('.')) continue;
       out.push({ name: relName, size: ent.size });
     }
   }
 }
 
-// 任务对话产物清单：扫描任务目录（复用 scanTreeDir 递归，跳过 .workbuddy/ 等 . 开头目录），
-// 排除 AGENTS.md / MEMORY.md / task.json 与 . 开头文件；返回 [{name,size,sourcePath}]
+// 任务对话产物清单：扫描任务目录（复用 scanTreeDir 递归），
+// 返回 [{name,size,sourcePath}]（含系统档案；. 开头隐藏文件与 . 开头目录除外）
 function taskArtifactFiles(task) {
   const files = [];
   if (!task || !task.dir || !fs.existsSync(task.dir)) return files;
