@@ -276,7 +276,8 @@ function reviveHarness() {
 const upgradeSockets = new Set(); // WS 升级 socket 跟踪（优雅关闭时需主动销毁，否则 server.close() 被长连接卡住）
 let shuttingDown = false;
 
-// 关闭智能体子进程：先 SIGTERM，1.5s 未退则 taskkill /T /F 杀进程树（Windows，含 tsx 派生的孙进程）
+// 关闭智能体子进程：先 SIGTERM，1.5s 未退则强制杀进程树。
+// Windows 用 taskkill /T /F（含 tsx 派生的孙进程）；macOS/Linux 用 SIGKILL（POSIX 兜底）。
 function shutdownHarness() {
   const p = harnessProcess;
   if (!p || p.exitCode !== null || p.killed) return;
@@ -284,7 +285,11 @@ function shutdownHarness() {
   try { p.kill('SIGTERM'); } catch (e) { /* 已退出则忽略 */ }
   setTimeout(() => {
     if (harnessProcess && harnessProcess.exitCode === null && pid) {
-      try { spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }); } catch (e) { /* 忽略 */ }
+      if (process.platform === 'win32') {
+        try { spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }); } catch (e) { /* 忽略 */ }
+      } else {
+        try { process.kill(pid, 'SIGKILL'); } catch (e) { /* 已退出则忽略 */ }
+      }
     }
   }, 1500).unref();
 }
@@ -2189,6 +2194,16 @@ function findArchiveSessionDir(groupName, taskId) {
     const id = urlPath.split('/').pop();
     db.agentTemplates = db.agentTemplates.filter((t) => t.id !== id);
     saveAgentTemplates(); // 同步落盘，重启后删除状态保持
+    // 同步删除模板记忆目录（data/agents/<id>/），否则孤儿恢复逻辑会在重启后把已删除模板「复活」。
+    // 仅清理 tpl_ 前缀模板目录（id 经 agentMemoryFile 同款清洗防穿越），_default 等系统目录不动。
+    if (/^tpl_/.test(id)) {
+      try {
+        const memDir = path.dirname(agentMemoryFile(id));
+        if (memDir !== AGENTS_DATA_DIR && memDir.startsWith(AGENTS_DATA_DIR + path.sep)) {
+          fs.rmSync(memDir, { recursive: true, force: true });
+        }
+      } catch (e) { /* 删除记忆目录失败不阻塞删除操作（孤儿恢复仍可能捞回，下次删除重试） */ }
+    }
     return sendJson(res, 200, { success: true });
   }
   // 智能体模板内置记忆（智能体管理页记忆编辑）：读取（懒建）/编辑/重置 data/agents/<id>/MEMORY.md

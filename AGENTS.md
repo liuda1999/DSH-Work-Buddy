@@ -16,7 +16,7 @@
 | **llm-wiki** | `llm-wiki/project/` | 静态构建产物，由网关在 `/llm-wiki-plugin/` 托管 | VitePress 文档库（智能体知识库），无独立进程 |
 | **技能** | `.dsh/skills/llm-wiki/` | 文件 | llm-wiki 技能（SKILL.md + 脚本），网关启动时幂等安装 |
 
-**核心链路**：`start.bat` → `node server.js`（网关 8765）→ 自动拉起 dsh 智能体（3080，子进程）、检查 Wiki 构建产物、安装技能。关闭网关时所有组件一起关闭（优雅关闭，不留孤儿进程）。
+**核心链路**：`start.bat`（Windows）/ `start.sh`（macOS/Linux）→ `node server.js`（网关 8765）→ 自动拉起 dsh 智能体（3080，子进程）、检查 Wiki 构建产物、安装技能。关闭网关时所有组件一起关闭（优雅关闭，不留孤儿进程；Windows 用 taskkill 杀进程树、其他平台 SIGKILL 兜底）。
 
 ---
 
@@ -26,7 +26,8 @@
 e:\worke
 ├── VERSION                 # 项目顶层版本号（当前 0.1.5）
 ├── README.md               # 对外说明
-├── start.bat               # 一键启动：依赖/构建（幂等）→ 端口检查 → 启动 Web + 拉起智能体
+├── start.bat               # 一键启动（Windows）：依赖/构建（幂等）→ 端口检查 → 启动 Web + 拉起智能体
+├── start.sh                # 一键启动（macOS/Linux）：等价 bash 逻辑，首次运行先 chmod +x
 ├── AGENTS.md               # 本文件
 ├── .gitignore              # 忽略 data/ node_modules/ 测试脚本/凭证等
 ├── .dsh/skills/llm-wiki/   # llm-wiki 技能（SKILL.md + references + scripts，已入库）
@@ -114,7 +115,8 @@ e:\worke
 
 ### 7.1 启动
 ```bat
-start.bat        # 依赖/构建（首次较慢，幂等）→ 端口检查 → 启动 Web 并拉起智能体
+start.bat        # Windows：依赖/构建（首次较慢，幂等）→ 端口检查 → 启动 Web 并拉起智能体
+./start.sh       # macOS/Linux：等价逻辑（bash），首次运行先 chmod +x start.sh
 ```
 或直接：`cd WorkBuddy-Web && node server.js`（自动拉起智能体 3080 + 检查 Wiki + 安装技能）。
 就绪标志：网关日志出现「dsh 智能体服务就绪」「Wiki 文档库就位」；访问 `http://127.0.0.1:8765`。

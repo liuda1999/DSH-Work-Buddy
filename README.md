@@ -1,4 +1,4 @@
-﻿# DSH Work Buddy
+# DSH Work Buddy
 
 DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集成了任务管理控制台（WorkBuddy-Web）、DeepSeek Harness 智能体组件和 LLM Wiki 文档组件。
 
@@ -13,7 +13,8 @@ DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集�
 DSH-WorkBuddy-0.1.6/
 ├── VERSION                 # 项目顶层版本号
 ├── README.md               # 本文件
-├── start.bat               # 一键启动脚本（Web + 智能体）
+├── start.bat               # 一键启动脚本（Windows，Web + 智能体）
+├── start.sh                # 一键启动脚本（macOS / Linux，Web + 智能体）
 ├── WorkBuddy-Web/          # 任务管理控制台前端 + 一体化服务
 ├── deepseek-harness/       # 智能体组件（DSH Harness）
 ├── llm-wiki/               # Wiki 文档组件
@@ -73,13 +74,20 @@ VitePress 驱动的 Wiki 文档站点，用于构建和发布 LLM Wiki 文档。
 
 ### 一键启动（推荐）
 
-在 Windows 下双击或命令行执行根目录的 `start.bat`：
+**Windows**：双击或命令行执行根目录的 `start.bat`：
 
-```bash
+```bat
 start.bat
 ```
 
-脚本会自动完成：
+**macOS / Linux**：终端执行根目录的 `start.sh`（首次运行先加执行权限）：
+
+```bash
+chmod +x start.sh
+./start.sh
+```
+
+两个脚本行为等价，自动完成：
 
 1. 检查 Node.js（要求 `^22.19.0 || >=24.0.0`），自动启用 pnpm（corepack / npx 兜底）。
 2. 若 `deepseek-harness` 依赖缺失，自动执行 `pnpm install`。
@@ -155,8 +163,9 @@ DSH-WorkBuddy-0.1.6.zip
 
 ## 注意事项
 
-1. 首次启动请使用根目录 `start.bat` 一键启动，它会自动安装依赖、构建并同时启动 Web 与智能体服务。
+1. 首次启动请使用根目录 `start.bat`（Windows）或 `start.sh`（macOS / Linux）一键启动，它会自动安装依赖、构建并同时启动 Web 与智能体服务。
 2. Web 控制台固定端口为 `127.0.0.1:8765`，智能体服务内部固定为 `127.0.0.1:3080`；若端口被占用请先关闭旧实例。
 3. `deepseek-harness` 依赖 Node `^22.19.0 || >=24.0.0`，请确认环境版本符合要求。
-4. 智能体真实对话需要 DeepSeek API Key，请通过环境变量 `DEEPSEEK_API_KEY` 或控制台「设置中心 → DeepSeek 大模型配置」配置；本仓库不包含任何真实密钥。
-5. 视频背景文件位于 `WorkBuddy-Web/card-bg/`，播放速度已在 `index.html` 中设置为 0.5 倍。
+4. 平台支持：Windows / macOS / Linux 均可运行。智能体沙箱按平台自动选择（Windows 无沙箱、Linux 用 landlock/bwrap、macOS 用系统 seatbelt）；网关优雅关闭在 Windows 用 `taskkill` 杀进程树、其他平台用 `SIGKILL` 兜底。
+5. 智能体真实对话需要 DeepSeek API Key，请通过环境变量 `DEEPSEEK_API_KEY` 或控制台「设置中心 → DeepSeek 大模型配置」配置；本仓库不包含任何真实密钥。
+6. 视频背景文件位于 `WorkBuddy-Web/card-bg/`，播放速度已在 `index.html` 中设置为 0.5 倍。
