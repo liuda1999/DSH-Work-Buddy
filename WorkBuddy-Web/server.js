@@ -1007,8 +1007,9 @@ function extractMarkdownHeadings(text) {
 }
 
 // 构建图谱：返回 {nodes, edges}（nodes 按 id 去重）
+// 图谱严格按 (category, repo) 隔离：只构建该仓库的文档（不同仓库间无节点、无提及边）
 function buildWikiGraph(category, repo) {
-  const docs = listWikiDocs(true); // 带正文（frontmatter 已在 parseWikiDoc 剥离）
+  const docs = listWikiDocs(true).filter((d) => d.category === category && d.repoSlug === repo); // 带正文（frontmatter 已在 parseWikiDoc 剥离）
   const nodes = [];
   const edges = [];
   const nodeIds = new Set();
