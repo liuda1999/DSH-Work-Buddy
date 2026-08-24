@@ -4710,15 +4710,28 @@ function clearDetail() {
   document.getElementById('detailTaskFiles').textContent = '—';
 }
 
-// 会话统计缓存：避免 hover 时重复解析 JSONL
+// 会话统计缓存：避免 hover 时重复解析 session.history
 const SESSION_STATS_CACHE = {};
 async function fetchSessionStats(sessionId) {
   if (SESSION_STATS_CACHE[sessionId]) return SESSION_STATS_CACHE[sessionId];
   try {
-    const r = await fetch('/api/session/stats?sessionId=' + encodeURIComponent(sessionId));
-    const j = await r.json();
-    SESSION_STATS_CACHE[sessionId] = j;
-    return j;
+    const v = await wbRpc('session.history', { sessionId, maxMessages: 200 });
+    const events = v && Array.isArray(v.events) ? v.events : [];
+    let messageCount = 0; // 对话轮数：真实用户消息数（排除「Current runtime context」注入上下文）
+    let createdTime = null; // 会话创建时间：最早事件的 ts
+    for (const ent of events) {
+      const et = ent.event && ent.event.type;
+      if (et === 'user/message') {
+        const texts = (((ent.event.data || {}).content) || [])
+          .filter(b => b && b.type === 'text').map(b => b.text || '');
+        if (texts.length && texts[0].startsWith('Current runtime context')) continue;
+        messageCount++;
+      }
+      if (!createdTime && ent.event && ent.event.time) createdTime = ent.event.time; // 事件毫秒时间戳
+    }
+    const stats = { sessionId, createdTime, messageCount };
+    SESSION_STATS_CACHE[sessionId] = stats;
+    return stats;
   } catch (e) {
     return { sessionId, createdTime: null, messageCount: 0 };
   }
@@ -4755,11 +4768,11 @@ function fillDetail(t, preview) {
 
   // 会话信息：创建时间 / 对话轮数 / 会话文件数
   const filesEl = document.getElementById('detailTaskFiles');
-  const files = Array.isArray(t.files) ? t.files : [];
-  filesEl.textContent = files.length ? `${files.length} 个文件` : '无';
+  const fileCount = typeof t.fileCount === 'number' ? t.fileCount : (Array.isArray(t.files) ? t.files.length : 0);
+  filesEl.textContent = fileCount ? `${fileCount} 个文件` : '无';
   const createdEl = document.getElementById('detailTaskSessionCreated');
   const roundsEl = document.getElementById('detailTaskRounds');
-  createdEl.textContent = t.openedAt ? fmtFull(t.openedAt) : '—';
+  createdEl.textContent = t.openedAt ? fmtFull(t.openedAt) : (t.createdAt ? fmtFull(t.createdAt) : '—');
   roundsEl.textContent = '—';
   if (t.sessionId) {
     fetchSessionStats(t.sessionId).then(st => {

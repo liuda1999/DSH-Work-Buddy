@@ -1490,6 +1490,8 @@ async function handleLocalApi(req, res, urlPath, params) {
       if (!t.workspaceId) return;
       taskCountByWs[t.workspaceId] = (taskCountByWs[t.workspaceId] || 0) + 1;
     });
+    // 附加会话文件数（右侧智能详情面板「会话内文件数」数据源）：扫描任务目录产物（含系统档案）
+    tasks = tasks.map((t) => ({ ...t, fileCount: taskArtifactFiles(t).length }));
     return sendJson(res, 200, { tasks, totalTaskCount: (db.tasks || []).length, taskCountByWs });
   }
   if (urlPath === '/api/tasks' && req.method === 'POST') {
@@ -1506,6 +1508,7 @@ async function handleLocalApi(req, res, urlPath, params) {
       workspaceId: body.workspaceId || null,
       dir: taskDir,
       deadline: body.deadline || null,
+      label: body.label || null,
       createdAt: new Date().toISOString(),
       completedAt: null
     };
@@ -1655,6 +1658,7 @@ async function handleLocalApi(req, res, urlPath, params) {
       if (body.action === 'bindSession') {
         task.sessionSnapshot = body.snapshot;
         if (body.sessionId) task.sessionId = body.sessionId;
+        if (!task.openedAt) task.openedAt = new Date().toISOString(); // 首次绑定会话时间（详情面板「会话创建时间」数据源）
       }
       // 续期：按新 deadline 重算 status（逾期 → 未逾期恢复为 today；已完成保持 completed）
       if (body.action === 'renew') {
