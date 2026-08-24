@@ -481,7 +481,9 @@ function recoverOrphanAgentTemplates() {
   let list = [];
   try { list = fs.readdirSync(AGENTS_DATA_DIR, { withFileTypes: true }); } catch (e) { return; }
   for (const ent of list) {
-    if (!ent.isDirectory() || !/^tpl_/.test(ent.name) || existing.has(ent.name)) continue;
+    // tpl-preset-* 为代码级预置模板（seed）记忆目录：seed 仅在 templates.json 未生成时注入内存，
+    // 固化后不属于持久化清单；其记忆属预置模板生命周期，不应经「孤儿找回」重新出现在资源仓库。
+    if (!ent.isDirectory() || !/^tpl_/.test(ent.name) || ent.name.startsWith('tpl-preset-') || existing.has(ent.name)) continue;
     const mem = path.join(AGENTS_DATA_DIR, ent.name, 'MEMORY.md');
     if (!fs.existsSync(mem)) continue;
     let createdAt = null;
