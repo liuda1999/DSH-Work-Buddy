@@ -1099,6 +1099,11 @@ svg{display:block}
 }
 .workspace-item:hover .ws-del{display:grid}
 .workspace-item .ws-del:hover{color:#EF4444;background:rgba(239,68,68,0.14)}
+/* 工作区卡片渐变背景选择（新建工作区弹窗） */
+.ws-grad-pick{display:flex;flex-wrap:wrap;gap:8px}
+.ws-grad-item{width:46px;height:28px;border-radius:7px;border:1px solid var(--border);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-4);transition:transform .15s, border-color .15s, box-shadow .15s}
+.ws-grad-item:hover{transform:scale(1.06);border-color:var(--border-strong)}
+.ws-grad-item.active{border-color:var(--green);box-shadow:0 0 0 2px rgba(34,197,94,.25)}
 
 /* ============ 任务标签 chip / 空态 ============ */
 .task-chip{
@@ -3632,7 +3637,6 @@ select.form-input option{background:#12161F;color:var(--text-2)}
         <h2 id="detailTaskTitle">尚未选择任务</h2>
         <span class="tag" id="detailTaskTag" hidden></span>
       </div>
-      <div class="dh-desc" id="detailTaskDesc">在任务看板中点击任意任务行，此处将展示该任务的详细信息。</div>
 
       <div class="meta-list">
         <div class="meta-row">
@@ -3711,6 +3715,11 @@ select.form-input option{background:#12161F;color:var(--text-2)}
         <div class="form-label">工作区名称<span class="req">*</span></div>
         <input class="form-input" id="wsNameInput" placeholder="例如：作品分享稿件" maxlength="24" />
         <div class="form-hint">将在数据目录 data/workspaces/ 下自动创建同名文件夹，并注册为 dsh 智能体工作区（实时同步）。</div>
+      </div>
+      <div style="margin-top:16px">
+        <div class="form-label">渐变色背景（可选）</div>
+        <div class="ws-grad-pick" id="wsGradPick"></div>
+        <div class="form-hint">为工作区卡片选择预制渐变背景；不选则使用默认样式。</div>
       </div>
       <div class="modal-error" id="wsFormError"></div>
     </div>
@@ -4489,15 +4498,41 @@ async function loadWorkspaces() {
   }
 }
 
+// ---------- 工作区渐变背景（可选，纯前端展示属性，localStorage 持久化） ----------
+const WS_GRADIENTS = [
+  { id: 'g0', label: '无', value: '' },
+  { id: 'g1', label: '青绿', value: 'linear-gradient(135deg, rgba(59,130,246,.20), rgba(34,197,94,.16))' },
+  { id: 'g2', label: '紫粉', value: 'linear-gradient(135deg, rgba(168,85,247,.20), rgba(236,72,153,.16))' },
+  { id: 'g3', label: '琥珀', value: 'linear-gradient(135deg, rgba(245,158,11,.18), rgba(239,68,68,.14))' },
+  { id: 'g4', label: '湖蓝', value: 'linear-gradient(135deg, rgba(6,182,212,.18), rgba(59,130,246,.16))' },
+  { id: 'g5', label: '玫红', value: 'linear-gradient(135deg, rgba(236,72,153,.18), rgba(168,85,247,.16))' },
+  { id: 'g6', label: '松石', value: 'linear-gradient(135deg, rgba(16,185,129,.18), rgba(6,182,212,.14))' },
+  { id: 'g7', label: '雾蓝', value: 'linear-gradient(135deg, rgba(100,116,139,.20), rgba(59,130,246,.14))' }
+];
+const WS_GRAD_KEY = 'dshwb.wsGradients';
+let WS_GRAD = ''; // 新建弹窗当前选中（空=不应用）
+function loadWsGradients() { try { return JSON.parse(localStorage.getItem(WS_GRAD_KEY) || '{}'); } catch { return {}; } }
+function saveWsGradient(id, value) {
+  const m = loadWsGradients();
+  if (value) m[id] = value; else delete m[id];
+  localStorage.setItem(WS_GRAD_KEY, JSON.stringify(m));
+}
+function renderWsGradPick() {
+  document.getElementById('wsGradPick').innerHTML = WS_GRADIENTS.map(g =>
+    `<span class="ws-grad-item${g.value === WS_GRAD ? ' active' : ''}" data-g="${g.id}" title="${esc(g.label)}" style="${g.value ? 'background:' + g.value : ''}">${g.value ? '' : '无'}</span>`
+  ).join('');
+}
+
 function renderWorkspaces() {
   const list = document.getElementById('workspaceList');
+  const gradMap = loadWsGradients();
   // 列表顶部固定一项「全部工作区」，其后为各 dsh 同步工作区（name=title、path 小字、任务数徽标；每项带删除 ✕）
   const items = [{ id: 'all', name: '全部工作区', taskCount: WB.totalTaskCount }].concat(
     WB.workspaces.map(w => ({ id: w.id, name: w.name, path: w.path, taskCount: w.taskCount != null ? w.taskCount : 0 }))
   );
   if (!items.some(i => i.id === WB.currentWs)) WB.currentWs = 'all';
   list.innerHTML = items.map(i => `
-    <div class="workspace-item${i.id === WB.currentWs ? ' active' : ''}" data-ws="${esc(i.id)}">
+    <div class="workspace-item${i.id === WB.currentWs ? ' active' : ''}" data-ws="${esc(i.id)}"${i.id !== 'all' && gradMap[i.id] ? ` style="background:${gradMap[i.id]}"` : ''}>
       <span class="ws-dot"></span>
       ${i.id === 'all'
         ? `<span class="ws-name">${esc(i.name)}</span>
@@ -4700,7 +4735,6 @@ function clearDetail() {
   document.getElementById('detailTaskId').textContent = '—';
   document.getElementById('detailTaskTitle').textContent = '尚未选择任务';
   document.getElementById('detailTaskTag').hidden = true;
-  document.getElementById('detailTaskDesc').textContent = '将鼠标悬停在任务看板中的任意任务上，此处将自动展示该任务的详细信息；点击任务可进入对应会话。';
   document.getElementById('detailTaskWorkspace').innerHTML = `${ICON_FOLDER}<span>—</span>`;
   document.getElementById('detailTaskDeadline').innerHTML = `${ICON_CAL}<span>—</span>`;
   document.getElementById('detailTaskStatus').innerHTML = '<span class="status-dot"></span>—';
@@ -4756,8 +4790,6 @@ function fillDetail(t, preview) {
     tag.hidden = true;
   }
 
-  document.getElementById('detailTaskDesc').textContent =
-    `创建于 ${fmtFull(t.createdAt)}${t.completedAt ? ' · 完成于 ' + fmtFull(t.completedAt) : ''}`;
   document.getElementById('detailTaskWorkspace').innerHTML = `${ICON_FOLDER}<span>${esc(wsNameOf(t))}</span>`;
   document.getElementById('detailTaskDeadline').innerHTML = `${ICON_CAL}<span>${t.deadline ? esc(fmtFull(t.deadline)) : '—'}</span>`;
   document.getElementById('detailTaskStatus').innerHTML =
@@ -4806,8 +4838,19 @@ document.querySelectorAll('.modal-mask').forEach(mask => {
 const modalNewWs = document.getElementById('modal-new-ws');
 document.getElementById('wsAddBtn').addEventListener('click', () => {
   document.getElementById('wsNameInput').value = '';
+  WS_GRAD = '';
+  renderWsGradPick();
   hideError(document.getElementById('wsFormError'));
   showModal(modalNewWs);
+});
+// 渐变选择点击：切换选中态
+document.getElementById('wsGradPick').addEventListener('click', e => {
+  const item = e.target.closest('.ws-grad-item');
+  if (!item) return;
+  const g = WS_GRADIENTS.find(x => x.id === item.dataset.g);
+  if (!g) return;
+  WS_GRAD = g.value;
+  renderWsGradPick();
 });
 
 document.getElementById('wsSubmitBtn').addEventListener('click', async () => {
@@ -4823,6 +4866,7 @@ document.getElementById('wsSubmitBtn').addEventListener('click', async () => {
       method: 'POST',
       body: JSON.stringify({ name })
     });
+    if (WS_GRAD) saveWsGradient(ws.id, WS_GRAD); // 渐变纯前端展示，落 localStorage
     hideModal(modalNewWs);
     await loadWorkspaces();   // 刷新工作区列表
     setCurrentWorkspace(ws.id); // 选中新工作区（联动刷新看板）
@@ -7709,6 +7753,7 @@ document.getElementById('workspaceList').addEventListener('click', async e => {
     if (!ok2) return;
     try {
       await fetchJson('/api/workspaces/' + encodeURIComponent(id), { method: 'DELETE' });
+      saveWsGradient(id, ''); // 清理该工作区的渐变背景记录
       // 同步移除本地副本后再渲染，避免删除项残留
       WB.workspaces = WB.workspaces.filter(w => w.id !== id);
       if (WB.currentWs === id) setCurrentWorkspace('all');
