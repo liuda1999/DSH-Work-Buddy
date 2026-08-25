@@ -3,6 +3,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { spawn } = require('child_process');
 
 const HOST = process.env.DSH_WB_HOST || '127.0.0.1';
@@ -173,6 +174,87 @@ function ensureSkills() {
     console.log('[DSH Work Buddy] 技能已安装：.dsh/skills/llm-wiki');
   } catch (e) {
     console.warn(`[DSH Work Buddy] 技能安装失败：${e.message}`);
+  }
+}
+
+// ---------- 通用兼容模式 preset（Web 扩展组件，harness 用户 preset 根） ----------
+// harness 支持用户自定义 preset：<dshHome>/.agent-presets/<id>/agent.cordis.yml（trust:user，agentPreset.list 可见）。
+// 「通用兼容」装配：持久 bash + 文件编辑（fs-local/str-replace-editor）+ 技能目录（skill-filesystem/tool-skill）；
+// 刻意避开 subagent/workflow/goal/web/todo/plan/ask-user/jobs 等 DeepSeek 专用/复杂工具——
+// 第三方/本地模型（非 DeepSeek 官方）在 function calling 下易因这些工具诱发失败循环（spec：thirdparty-model-preset-default）。
+// 不修改 deepseek-harness 任何源码/配置；目标位于用户主目录（项目树外，符合凭证/数据安全约定），幂等安装。
+const UNIVERSAL_PRESET_DIR = path.join(os.homedir(), '.dsh', '.agent-presets', 'universal');
+const UNIVERSAL_PRESET_YML = `# The universal agent preset: 通用兼容模式（WorkBuddy-Web 扩展组件）。
+# 工具面：持久 bash + 文件编辑 + 技能（skill）。刻意避开 subagent/workflow/goal/web/todo/plan/ask-user/jobs
+# 等 DeepSeek 专用/复杂工具——第三方/本地模型在 function calling 下易因这些工具诱发失败循环。
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: >-
+      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+      You operate in universal-compatible mode: use the terminal for command execution,
+      the file editor for precise file edits, and the skill tool to discover and load
+      installed skills (such as llm-wiki).
+
+- id: persistent-shell
+  name: cordis:group
+  group: true
+  isolate:
+    terminals: true
+  config:
+    - id: pty
+      name: '@deepseek-ai/dsh-terminal'
+    - id: terminal-bash
+      name: '@deepseek-ai/dsh-terminal-bash'
+      config:
+        timeoutMs: 300000
+    - id: persistent-bash
+      name: '@deepseek-ai/dsh-tool-bash-persistent'
+      config:
+        timeoutMs: 300000
+        description: |-
+          Run commands in a bash shell
+          * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
+          * You don't have access to the internet via this tool.
+          * State is persistent across command calls and discussions with the user.
+          * Please avoid commands that may produce a very large amount of output.
+
+- id: filesystem
+  name: cordis:group
+  group: true
+  isolate:
+    fs: true
+  config:
+    - id: fs-local
+      name: '@deepseek-ai/dsh-fs-local'
+      config:
+        cwd: !!js process.env.DSH_CWD ?? process.cwd()
+    - id: str-replace-editor
+      name: '@deepseek-ai/dsh-tool-str-replace-editor'
+      config:
+        maxOutputChars: 16000
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+`;
+const UNIVERSAL_PRESET_META = `name: 通用兼容模式
+description: 持久 bash + 文件编辑 + 技能目录（llm-wiki 等技能可用），面向第三方/本地模型的最小工具面。
+order: 5
+`;
+// 幂等安装：目标目录已有 agent.cordis.yml 则跳过；写失败不阻塞启动
+function ensureUniversalPreset() {
+  try {
+    const target = path.join(UNIVERSAL_PRESET_DIR, 'agent.cordis.yml');
+    if (fs.existsSync(target)) return;
+    fs.mkdirSync(UNIVERSAL_PRESET_DIR, { recursive: true });
+    fs.writeFileSync(target, UNIVERSAL_PRESET_YML, 'utf8');
+    fs.writeFileSync(path.join(UNIVERSAL_PRESET_DIR, 'preset.yml'), UNIVERSAL_PRESET_META, 'utf8');
+    console.log(`[DSH Work Buddy] 通用兼容模式已安装：${UNIVERSAL_PRESET_DIR}（重启智能体后 agentPreset.list 可见）`);
+  } catch (e) {
+    console.warn(`[DSH Work Buddy] 通用兼容模式安装失败：${e.message}`);
   }
 }
 
@@ -2380,4 +2462,5 @@ server.listen(PORT, HOST, () => {
   ensureHarness(); // 智能体组件：探测 → 未运行则自动拉起（127.0.0.1:3080）
   ensureWiki();    // Wiki 文档库：构建产物就位检查（/llm-wiki-plugin/）
   ensureSkills();  // dsh 技能：llm-wiki 项目技能安装到 .dsh/skills/（幂等）
+  ensureUniversalPreset(); // 通用兼容模式 preset：安装到 harness 用户 preset 根（幂等）
 });

@@ -1385,6 +1385,17 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 .ss-note{display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--text-3);border:1px dashed var(--border);border-radius:10px;padding:8px 12px;background:rgba(255,255,255,0.02)}
 .ss-note .ss-note-ico{flex-shrink:0;margin-top:1px}
 .ss-note.err{color:#FCA5A5;border-color:rgba(248,113,113,0.35);background:rgba(248,113,113,0.05)}
+/* 工具失败护栏条：连续 tool/result 失败 >=3 时显示在会话信息区顶部 */
+#sscGuardBar{display:flex;align-items:flex-start;gap:10px;font-size:12px;color:#FCA5A5;line-height:1.55;padding:9px 12px;border-bottom:1px solid rgba(248,113,113,0.35);background:rgba(248,113,113,0.08)}
+#sscGuardBar[hidden]{display:none}
+.ssc-guard-ico{flex-shrink:0;margin-top:1px}
+.ssc-guard-body{flex:1;min-width:0}
+.ssc-guard-title{font-weight:600}
+.ssc-guard-sum{margin-top:3px;font-size:11px;opacity:.85;word-break:break-all}
+.ssc-guard-btn{flex-shrink:0;font-size:11.5px;padding:5px 10px;border-radius:8px;border:1px solid rgba(252,165,165,0.5);color:#FCA5A5;background:rgba(248,113,113,0.10);cursor:pointer;white-space:nowrap}
+.ssc-guard-btn:hover{background:rgba(248,113,113,0.2)}
+.ssc-guard-x{flex-shrink:0;align-self:flex-start;border:none;background:none;color:var(--text-5);font-size:13px;cursor:pointer;padding:2px 4px;border-radius:6px}
+.ssc-guard-x:hover{color:#FCA5A5;background:rgba(255,255,255,0.06)}
 /* 审批 / 提问卡片 */
 .ss-ask{border:1px solid rgba(250,204,21,0.4);background:rgba(250,204,21,0.06);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px}
 .ss-ask .ss-ask-title{font-size:12.5px;font-weight:600;color:#FDE68A;display:flex;align-items:center;gap:7px}
@@ -1513,6 +1524,8 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 .ssc-pop-item .ssc-pop-txt{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
 .ssc-pop-item .ssc-pop-txt .ssc-pop-name{flex:none}
 .ssc-pop-item .ssc-pop-desc{font-size:11px;color:var(--text-5);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px}
+.ssc-pop-item .ssc-pop-sub{font-size:10.5px;color:#FBBF24;line-height:1.5;max-width:280px;white-space:normal}
+.ssc-pop-warn{font-size:11px;color:#FBBF24;line-height:1.55;padding:7px 10px;margin:0 2px 8px;border:1px dashed rgba(251,191,36,0.4);border-radius:8px;background:rgba(251,191,36,0.06)}
 .ssc-pop-item.locked{cursor:not-allowed;opacity:.55}
 .ssc-pop-foot{padding:8px 10px 5px;font-size:11px;color:var(--text-5);border-top:1px solid var(--border);margin-top:4px}
 
@@ -3925,6 +3938,16 @@ select.form-input option{background:#12161F;color:var(--text-2)}
       <!-- 中栏：自研对话区（直连 dsh harness RPC + WS 事件流） -->
       <div class="sw-mid">
         <div class="session-body">
+          <!-- 工具失败护栏条：连续 tool/result 失败 >=3 时显示（会话信息区顶部横幅） -->
+          <div id="sscGuardBar" hidden>
+            <span class="ssc-guard-ico">⚠</span>
+            <div class="ssc-guard-body">
+              <div class="ssc-guard-title">当前模型工具调用频繁失败，建议切换通用兼容模式或更换模型</div>
+              <div class="ssc-guard-sum" hidden></div>
+            </div>
+            <button type="button" class="ssc-guard-btn" id="sscGuardSwitch">切换通用兼容模式</button>
+            <button type="button" class="ssc-guard-x" id="sscGuardClose" title="关闭">✕</button>
+          </div>
           <div class="ss-chat" id="ssChat">
             <!-- 消息列表 -->
             <div class="ss-chat-scroll" id="ssChatScroll">
@@ -5471,6 +5494,9 @@ const CHAT = {
   presets: null,            // 工作模式清单（agentPreset.list，null=未加载）
   preset: null,             // 当前会话工作模式 id（standard / code / minimal / cordis…）
   hasTurn: false,           // 会话已开始对话（存在 turn/真实消息）：此后不可切换工作模式
+  modelClass: null,         // 当前模型来源分类：'deepseek'（官方）| 'thirdparty'（第三方/本地端点），null=未知
+  presetHintShown: false,   // 第三方模型 → 通用兼容模式推荐提示已展示（每次会话最多自动弹一次）
+  toolErrStreak: 0,         // 连续工具调用失败计数（>=3 触发护栏条 + 取消当前回合）
   imageLimits: null,        // 图片附件限制投影（history projections.values.imageLimits）
   perms: null,              // 权限级别投影（projections.values.permissions = {options,currentValue}）
   attach: [],               // 待发送图片附件 [{name,mediaType,data,size}]
@@ -5901,6 +5927,11 @@ function chatEvToolResult(d) {
   const msg = d.message || {};
   const callId = msg.toolCallId;
   const isErr = !!(msg.isError || d.error);
+  // 失败护栏：连续工具调用失败计数（成功归零）；历史折叠回放不计数，避免旧错误触发护栏
+  if (!CHAT.folding) {
+    if (isErr) CHAT.toolErrStreak = (CHAT.toolErrStreak || 0) + 1;
+    else CHAT.toolErrStreak = 0;
+  }
   let card = callId ? CHAT.toolCards.get(callId) : null;
   if (!card) {
     card = chatToolCard('', '', isErr ? 'err' : 'ok');
@@ -5919,6 +5950,16 @@ function chatEvToolResult(d) {
   if (body.length > 4000) body = body.slice(0, 4000) + '\n…（已截断）';
   const bodyEl = card.querySelector('.ss-tool-body');
   if (bodyEl) bodyEl.innerHTML = `<pre>${esc(body)}</pre>`;
+  // 失败护栏：连续失败 >=3 → 渲染护栏条；恰好到 3 次时取消当前回合（不自动重试），避免工具调用失控循环
+  if ((CHAT.toolErrStreak || 0) >= 3) {
+    const errTxt = isErr ? (txts.join('\n') || body) : '';
+    renderSscGuardBar(errTxt);
+    if (CHAT.toolErrStreak === 3 && CHAT.sessionId && !CHAT.folding) {
+      wbRpc('session.cancel', { sessionId: CHAT.sessionId }).catch(() => {});
+    }
+  } else {
+    renderSscGuardBar();
+  }
 }
 
 function chatEvTurnEnd(d) {
@@ -6164,6 +6205,9 @@ async function sscSend() {
   const text = inp.value.trim();
   // 允许仅携带附件发送（文件/图片）；readonly 一律拦截
   if ((!text && !CHAT.files.length && !CHAT.attach.length) || CHAT.readonly) return;
+  // 手动发送：重置工具失败计数并隐藏护栏条
+  CHAT.toolErrStreak = 0;
+  renderSscGuardBar();
   // 斜杠命令分流：命中静态名单/动态目录/技能名 → 走网关 commands/execute（命令不依赖模型路由与附件）
   const cm = text.match(/^\/([a-z0-9_-]+)/);
   if (cm) {
@@ -6252,10 +6296,39 @@ function chatQueueText(m) {
   return t || '（非文本消息）';
 }
 
+// 模型来源分类：仅 DeepSeek 官方 provider（deepseek-official）视为官方模型，其余（本地端点/第三方）一律视为第三方
+function isThirdPartyModel(provider) {
+  return !!provider && provider !== 'deepseek-official';
+}
+
+// Web 侧工作模式映射表：id=Web 展示名、harness=实际 agentPreset id（agentPreset.select 提交 harness id）。
+// 「通用兼容」映射到 Web 自定义 preset `universal`（harness 用户 preset 根，含 tool-skill 技能目录 + 持久 bash + 文件编辑，
+// 由网关 ensureUniversalPreset 幂等安装，trust:user）——保留 llm-wiki 等技能可用，同时避开 DeepSeek 专用/复杂工具。
+const WB_MODES = [
+  { id: 'universal', name: '通用兼容', harness: 'universal', desc: '专为非 DeepSeek 第三方/本地 API 模型准备 · 通用兼容性最好' },
+  { id: 'standard', name: '标准', harness: 'standard', desc: '' },
+  { id: 'code', name: '代码', harness: 'code', desc: '' },
+  { id: 'cordis', name: 'Cordis', harness: 'cordis', desc: '' },
+];
+const WB_PRESET_MAP = { universal: 'universal', standard: 'standard', code: 'code', cordis: 'cordis' };
+// harness id → Web 模式（用于 chip 显示 Web 名）
+function harnessToWebMode(h) {
+  return (WB_MODES || []).find(x => x.harness === h) || null;
+}
+// 第三方模型时模式弹层的能力标注（仅追加展示，不改选择逻辑）
+const WB_MODE_CAP = {
+  universal: '这是给非 DeepSeek 第三方 API 用的：终端 + 文件编辑 + 技能（llm-wiki 等可用）。注意：本地文件系统无沙箱，请谨慎授权——权限保持「工作区写入」或更低；通用兼容性最好。',
+  standard: '含多工具（shell/fs/技能/子代理/网络等）· 需模型具备 function calling',
+  code: '含多工具（shell/fs/技能/子代理/网络等）· 需模型具备 function calling',
+  cordis: 'Cordis 插件开发向 · 需模型具备 function calling 与复杂编排能力',
+};
+
 // 工作模式中文名兜底（presets 清单加载失败/未就绪时使用）
 const CHAT_PRESET_FALLBACK = { standard: '标准模式', code: 'PTC 模式', minimal: '极简模式', cordis: '创造模式' };
 function chatPresetName(id) {
   if (!id) return '…';
+  const wb = harnessToWebMode(id);
+  if (wb) return wb.name;
   const p = (CHAT.presets || []).find(x => x && x.id === id);
   if (p && p.name) return p.name;
   return CHAT_PRESET_FALLBACK[id] || id;
@@ -6388,8 +6461,10 @@ function renderSscChips() {
   const box = document.getElementById('sscChips');
   if (!box) return;
   const cur = CHAT.models && CHAT.models.current;
-  let html = `<button class="ssc-chip" id="sscModelChip" title="点击选择模型">
-    模型 <span class="ssc-chip-val">${esc(cur ? (cur.model || '—') : '…')}</span> ▾</button>`;
+  const tpBadge = (cur && isThirdPartyModel(cur.provider))
+    ? `<span class="rs-badge" style="margin-left:6px" title="第三方/本地模型（${esc(cur.provider)}）">第三方</span>` : '';
+  let html = `<button class="ssc-chip" id="sscModelChip" title="点击选择模型${cur ? `（当前 ${esc(cur.provider || '')} / ${esc(cur.model || '')}）` : ''}">
+    模型 <span class="ssc-chip-val">${esc(cur ? (cur.model || '—') : '…')}</span>${tpBadge} ▾</button>`;
   html += `<button class="ssc-chip" id="sscModeChip" title="工作模式（对话开始前可切换）">
     模式 <span class="ssc-chip-val">${esc(chatPresetName(CHAT.preset))}</span> ▾</button>`;
   html += `<button class="ssc-chip" id="sscPermChip" title="智能体权限级别（沙箱与审批策略）">
@@ -6427,10 +6502,11 @@ async function chatLoadModels() {
     CHAT.models = null;
   }
   if (CHAT.openToken !== token) return;
+  const cur = CHAT.models && CHAT.models.current;
+  CHAT.modelClass = (cur && cur.provider) ? (isThirdPartyModel(cur.provider) ? 'thirdparty' : 'deepseek') : null;
   renderSscChips();
   chatApplyModelState();
   // 模态判定：依据当前模型决定图片上传按钮显隐
-  const cur = CHAT.models && CHAT.models.current;
   chatEvalVision(cur && cur.provider, cur && cur.model);
 }
 
@@ -6456,6 +6532,9 @@ function renderSscPop() {
     if (!CHAT.perms) { pop.innerHTML = '<div class="ssc-menu-empty">权限信息加载中…</div>'; return; }
     const cur = CHAT.perms.currentValue;
     let html = '<div class="ssc-pop-group">权限级别</div>';
+    if (CHAT.modelClass === 'thirdparty') {
+      html += '<div class="ssc-pop-warn">当前为第三方模型，建议保持「工作区写入」或更低权限级别；通用兼容模式使用本地文件系统（无沙箱），高权限请谨慎。</div>';
+    }
     for (const o of (CHAT.perms.options || [])) {
       if (!o || !o.value) continue;
       const isCur = o.value === cur;
@@ -6472,17 +6551,20 @@ function renderSscPop() {
     return;
   }
   if (CHAT.sscPopKind === 'mode') {
-    // 工作模式分支：agentPreset.list 清单；对话开始后（hasTurn/只读）项不可点
-    if (!CHAT.presets) { pop.innerHTML = '<div class="ssc-menu-empty">工作模式加载中…</div>'; return; }
+    // 工作模式分支：Web 模式映射表（WB_MODES）渲染；data-preset 存 harness id（agentPreset.select 提交值）；
+    // 对话开始后（hasTurn/只读）项不可点；第三方模型追加能力标注
     const switchable = !CHAT.hasTurn && !CHAT.readonly;
     let html = '<div class="ssc-pop-group">工作模式</div>';
-    for (const p of CHAT.presets) {
-      if (!p || !p.id) continue;
-      const isCur = p.id === CHAT.preset;
-      html += `<div class="ssc-pop-item ssc-pop-mode${isCur ? ' cur' : ''}${switchable ? '' : ' locked'}" data-preset="${esc(p.id)}">
+    for (const wb of WB_MODES) {
+      if (!wb || !wb.harness) continue;
+      const hp = (CHAT.presets || []).find(x => x && x.id === wb.harness);
+      const isCur = wb.harness === CHAT.preset;
+      const desc = wb.desc || (hp && hp.description) || '';
+      html += `<div class="ssc-pop-item ssc-pop-mode${isCur ? ' cur' : ''}${switchable ? '' : ' locked'}" data-preset="${esc(wb.harness)}">
         <span class="ssc-pop-txt">
-          <span class="ssc-pop-name">${esc(p.name || p.id)}${p.isDefault ? '<span class="rs-badge is-default" style="margin-left:6px">默认</span>' : ''}</span>
-          ${p.description ? `<span class="ssc-pop-desc">${esc(p.description)}</span>` : ''}
+          <span class="ssc-pop-name">${esc(wb.name)}${hp && hp.isDefault ? '<span class="rs-badge is-default" style="margin-left:6px">默认</span>' : ''}</span>
+          ${desc ? `<span class="ssc-pop-desc">${esc(desc)}</span>` : ''}
+          ${CHAT.modelClass === 'thirdparty' && WB_MODE_CAP[wb.id] ? `<span class="ssc-pop-sub">${esc(WB_MODE_CAP[wb.id])}</span>` : ''}
         </span>
         ${isCur ? '<span class="ssc-pop-check">✓</span>' : ''}</div>`;
     }
@@ -6525,12 +6607,22 @@ async function sscSelectModel(prov, model) {
   try {
     const v = await wbRpc('session.selectModel', { sessionId: CHAT.sessionId, provider: prov, model });
     if (CHAT.models) CHAT.models.current = (v && v.selected) || { provider: prov, model };
+    CHAT.modelClass = isThirdPartyModel(prov) ? 'thirdparty' : 'deepseek';
+    // 用户切换模型：重置工具失败计数并隐藏护栏条
+    CHAT.toolErrStreak = 0;
+    renderSscGuardBar();
     renderSscChips();
     chatApplyModelState();
     document.getElementById('sscPop').hidden = true;
     // 切换模型后重新判定模态：视觉模型显示图片按钮，非视觉模型隐藏并丢弃已选图片
     chatEvalVision(prov, model);
     toast('模型已切换为 ' + model);
+    // 默认模式联动：第三方模型 + 高工具依赖模式 + 会话未开始 + 未提示过 → 推荐通用兼容模式
+    if (!CHAT.hasTurn && !CHAT.readonly && CHAT.modelClass === 'thirdparty'
+      && (CHAT.preset === 'standard' || CHAT.preset === 'code' || CHAT.preset === 'cordis')
+      && !CHAT.presetHintShown) {
+      suggestUniversalPreset();
+    }
   } catch (e) {
     toast('切换失败：' + e.message);
   }
@@ -6567,19 +6659,75 @@ async function chatLoadCommands() {
   }
 }
 
-// 切换工作模式：仅空白会话可切（agentPreset.select，对话开始后服务端报 agent-preset-locked）
+// 切换工作模式：仅空白会话可切（agentPreset.select，对话开始后服务端报 agent-preset-locked）；
+// 服务端拒绝（preset 不存在 / 其他错误）→ 回滚 CHAT.preset 为原值并 toast，不抛未捕获异常
 async function sscSelectPreset(id) {
   if (!CHAT.sessionId || !id) return;
   if (CHAT.hasTurn || CHAT.readonly) { toast('对话开始后不可切换工作模式'); return; }
+  const prev = CHAT.preset;
   try {
     await wbRpc('agentPreset.select', { sessionId: CHAT.sessionId, agentPreset: id });
     CHAT.preset = id;
+    CHAT.toolErrStreak = 0;
+    renderSscGuardBar();
     renderSscChips();
     document.getElementById('sscPop').hidden = true;
     toast('工作模式已切换为 ' + chatPresetName(id));
   } catch (e) {
     const msg = String((e && e.message) || '');
-    toast(msg.includes('agent-preset-locked') ? '对话开始后不可切换工作模式' : '切换失败：' + msg);
+    if (msg.includes('agent-preset-locked')) {
+      toast('对话开始后不可切换工作模式');
+    } else {
+      CHAT.preset = prev;
+      toast('目标模式不可用，保持当前模式');
+    }
+  }
+}
+
+// 工具失败护栏条渲染：toolErrStreak>=3 显示（含失败摘要，截断 200 字符），否则自动隐藏；
+// 摘要为空字符串时隐藏摘要行
+function renderSscGuardBar(summary) {
+  const bar = document.getElementById('sscGuardBar');
+  if (!bar) return;
+  if ((CHAT.toolErrStreak || 0) < 3) { bar.hidden = true; return; }
+  const t = bar.querySelector('.ssc-guard-title');
+  if (t) t.textContent = `当前模型工具调用频繁失败（${CHAT.toolErrStreak} 次），建议切换通用兼容模式或更换模型`;
+  const s = bar.querySelector('.ssc-guard-sum');
+  if (s) {
+    let txt = summary || '';
+    if (txt.length > 200) txt = txt.slice(0, 200) + '…';
+    s.textContent = txt;
+    s.hidden = !txt;
+  }
+  bar.hidden = false;
+}
+
+// 通用兼容模式推荐（任务 3/4 共用）：第三方模型 + 高工具依赖模式时弹 wbConfirm；
+// 确认 → agentPreset.select minimal（失败回滚原值 + toast）；取消 → 记录已提示
+async function suggestUniversalPreset() {
+  if (!CHAT.sessionId || CHAT.readonly) return;
+  if (CHAT.modelClass !== 'thirdparty') return;
+  if (CHAT.preset !== 'standard' && CHAT.preset !== 'code' && CHAT.preset !== 'cordis') return;
+  const ok = await wbConfirm({
+    title: '建议切换通用兼容模式',
+    message: '当前是非 DeepSeek 第三方模型，工具调用能力可能不足。通用兼容模式专门为此设计：终端 + 文件编辑 + 技能（llm-wiki 等仍可用），兼容性最好。注意本地文件系统无沙箱——请谨慎授权，权限保持「工作区写入」或更低。',
+    okText: '切换通用兼容模式',
+    cancelText: '保持当前模式'
+  });
+  if (!CHAT.sessionId) return; // 弹窗期间会话已关闭
+  if (!ok) { CHAT.presetHintShown = true; return; }
+  const prev = CHAT.preset;
+  const target = WB_PRESET_MAP.universal; // 'universal'（harness 用户 preset，含 tool-skill）
+  try {
+    await wbRpc('agentPreset.select', { sessionId: CHAT.sessionId, agentPreset: target });
+    CHAT.preset = target;
+    CHAT.toolErrStreak = 0;
+    renderSscGuardBar();
+    renderSscChips();
+    toast('已切换为通用兼容模式');
+  } catch (e) {
+    CHAT.preset = prev;
+    toast('目标模式不可用，保持当前模式');
   }
 }
 
@@ -6589,6 +6737,22 @@ async function sscSelectPreset(id) {
 async function sscSelectPerm(value) {
   if (!CHAT.sessionId || !value) return;
   if (value === 'custom' || !CHAT.perms) return; // custom 为只读组合，不可直接切换
+  // 权限护栏：第三方模型下目标权限高于当前 → 先确认（options 升序：read-only < workspace-write < danger-full-access）
+  if (CHAT.modelClass === 'thirdparty') {
+    const opts = CHAT.perms.options || [];
+    const idxOf = v => opts.findIndex(o => o && o.value === v);
+    const curIdx = idxOf(CHAT.perms.currentValue);
+    const tgtIdx = idxOf(value);
+    if (curIdx >= 0 && tgtIdx >= 0 && tgtIdx > curIdx) {
+      const ok2 = await wbConfirm({
+        title: '确认切换更高权限',
+        message: '当前模型为非 DeepSeek 官方模型，较高权限下若工具调用失控可能影响工作区外文件。确认切换？',
+        okText: '确认切换',
+        danger: true
+      });
+      if (!ok2) return;
+    }
+  }
   const token = CHAT.openToken;
   const res = await chatExecCommand('/permission ' + value); // 失败已在内部 toast
   if (res && res.result && res.result.kind !== 'error') {
@@ -6709,9 +6873,13 @@ async function ChatOpen(task, readonly) {
   CHAT.presets = null;
   CHAT.preset = null;
   CHAT.hasTurn = false;
+  CHAT.modelClass = null;
+  CHAT.presetHintShown = false;
+  CHAT.toolErrStreak = 0;
   CHAT.imageLimits = null;
   CHAT.perms = null;
   CHAT.attach = [];
+  document.getElementById('sscGuardBar').hidden = true;
   CHAT.files = [];
   CHAT.vision = null;
   CHAT.sscPopKind = 'model';
@@ -6780,9 +6948,13 @@ function ChatClose() {
   CHAT.presets = null;
   CHAT.preset = null;
   CHAT.hasTurn = false;
+  CHAT.modelClass = null;
+  CHAT.presetHintShown = false;
+  CHAT.toolErrStreak = 0;
   CHAT.imageLimits = null;
   CHAT.perms = null;
   CHAT.sscPopKind = 'model';
+  document.getElementById('sscGuardBar').hidden = true;
   updateSscVisionUI();
   const attachBox = document.getElementById('sscAttach');
   if (attachBox) { attachBox.innerHTML = ''; attachBox.hidden = true; }
@@ -6873,6 +7045,11 @@ function ChatClose() {
     } else if (it.dataset.prov) {
       sscSelectModel(it.dataset.prov, it.dataset.model);
     }
+  });
+  // 护栏条：切换通用兼容模式（复用公共切换逻辑）/ 关闭
+  document.getElementById('sscGuardSwitch').addEventListener('click', () => { suggestUniversalPreset(); });
+  document.getElementById('sscGuardClose').addEventListener('click', () => {
+    document.getElementById('sscGuardBar').hidden = true;
   });
   // 文件附件（文本块注入）：按钮唤起文件选择 → 逐文件读文本 → 预览
   document.getElementById('sscFileBtn').addEventListener('click', () => {
@@ -7719,12 +7896,13 @@ let _cfResolve = null;
 const modalConfirm = document.getElementById('modal-confirm');
 const cfOkBtn = document.getElementById('cfOk');
 const cfCancelBtn = document.getElementById('cfCancel');
-function wbConfirm({ title = '确认操作', message = '', okText = '确认', danger = false } = {}) {
+function wbConfirm({ title = '确认操作', message = '', okText = '确认', cancelText = '取消', danger = false } = {}) {
   return new Promise(resolve => {
     _cfResolve = resolve;
     document.getElementById('cfTitle').textContent = title;
     document.getElementById('cfMsg').textContent = message;
     cfOkBtn.textContent = okText;
+    cfCancelBtn.textContent = cancelText;
     cfOkBtn.classList.toggle('btn-danger', danger);
     cfOkBtn.classList.toggle('btn-primary', !danger);
     showModal(modalConfirm);

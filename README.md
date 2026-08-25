@@ -2,7 +2,7 @@
 
 DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集成了任务管理控制台（WorkBuddy-Web）、DeepSeek Harness 智能体组件和 LLM Wiki 文档组件。
 
-- **版本**：`0.1.7`
+- **版本**：`0.1.8`
 - **项目标识**：见根目录 [`VERSION`](./VERSION)
 
 ---
@@ -10,7 +10,7 @@ DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集�
 ## 目录结构
 
 ```
-DSH-WorkBuddy-0.1.7/
+DSH-WorkBuddy-0.1.8/
 ├── VERSION                 # 项目顶层版本号
 ├── README.md               # 本文件
 ├── start.bat               # 一键启动脚本（Windows，Web + 智能体）
@@ -31,7 +31,7 @@ DSH-WorkBuddy-0.1.7/
 
 - **入口文件**：`WorkBuddy-Web/index.html`
 - **一体化服务**：`WorkBuddy-Web/server.js`（固定端口 `127.0.0.1:8765`）
-- **版本**：`0.1.7`
+- **版本**：`0.1.8`
 
 ### 2. deepseek-harness
 
@@ -137,7 +137,7 @@ pnpm docs:preview
 本项目分发包为根目录下的：
 
 ```
-DSH-WorkBuddy-0.1.7.zip
+DSH-WorkBuddy-0.1.8.zip
 ```
 
 该压缩包已排除以下内容：
@@ -155,9 +155,14 @@ DSH-WorkBuddy-0.1.7.zip
 
 ## 版本策略
 
-- 整个 DSH Work Buddy 项目对外版本为 `0.1.7`（见 `VERSION`）。
-- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.7`。
+- 整个 DSH Work Buddy 项目对外版本为 `0.1.8`（见 `VERSION`）。
+- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.8`。
 - `deepseek-harness`、`llm-wiki` 等组件保留其自身原有版本，不强制统一。
+
+### v0.1.8 更新要点
+
+- **第三方/自定义大模型**：支持非 DeepSeek 第三方与本地 API 模型（设置中心内置供应商目录 40+ 家，含本地 vLLM / llama.cpp / ollama 等 OpenAI 兼容端点）。
+- **新模式-通用兼容**：新增「通用兼容」工作模式，专为非 DeepSeek 第三方/本地模型设计，装配终端 + 文件编辑 + 技能（llm-wiki 等可用），兼容性最好；第三方模型下自动/手动切换有权限护栏提示。
 
 ### v0.1.7 更新要点
 
