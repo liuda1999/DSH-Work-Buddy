@@ -7,7 +7,7 @@ set "HARNESS=%ROOT%deepseek-harness\deepseek-harness-master"
 set "WIKI=%ROOT%llm-wiki\project"
 
 echo ==========================================
-echo   DSH Work Buddy 一键启动  (v0.1.8)
+echo   DSH Work Buddy 一键启动  (v0.1.9)
 echo   固定端口: http://127.0.0.1:8765
 echo ==========================================
 echo.

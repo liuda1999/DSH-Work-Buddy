@@ -2,7 +2,7 @@
 
 DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集成了任务管理控制台（WorkBuddy-Web）、DeepSeek Harness 智能体组件和 LLM Wiki 文档组件。
 
-- **版本**：`0.1.8`
+- **版本**：`0.1.9`
 - **项目标识**：见根目录 [`VERSION`](./VERSION)
 
 ---
@@ -10,7 +10,7 @@ DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集�
 ## 目录结构
 
 ```
-DSH-WorkBuddy-0.1.8/
+DSH-WorkBuddy-0.1.9/
 ├── VERSION                 # 项目顶层版本号
 ├── README.md               # 本文件
 ├── start.bat               # 一键启动脚本（Windows，Web + 智能体）
@@ -31,7 +31,7 @@ DSH-WorkBuddy-0.1.8/
 
 - **入口文件**：`WorkBuddy-Web/index.html`
 - **一体化服务**：`WorkBuddy-Web/server.js`（固定端口 `127.0.0.1:8765`）
-- **版本**：`0.1.8`
+- **版本**：`0.1.9`
 
 ### 2. deepseek-harness
 
@@ -137,7 +137,7 @@ pnpm docs:preview
 本项目分发包为根目录下的：
 
 ```
-DSH-WorkBuddy-0.1.8.zip
+DSH-WorkBuddy-0.1.9.zip
 ```
 
 该压缩包已排除以下内容：
@@ -155,9 +155,14 @@ DSH-WorkBuddy-0.1.8.zip
 
 ## 版本策略
 
-- 整个 DSH Work Buddy 项目对外版本为 `0.1.8`（见 `VERSION`）。
-- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.8`。
+- 整个 DSH Work Buddy 项目对外版本为 `0.1.9`（见 `VERSION`）。
+- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.9`。
 - `deepseek-harness`、`llm-wiki` 等组件保留其自身原有版本，不强制统一。
+
+### v0.1.9 更新要点
+
+- **通用兼容模式补齐基础工具面**：文件搜索（grep/glob，ripgrep 跨平台）+ 网络搜索（web_search，web_fetch 关闭）+ Windows 下 pwsh 终端（POSIX 保持持久 bash），全部复用 harness 既有工具，零新增依赖。
+- **第三方模型工具调用质量优化（openai-responses (Responses) 模式）**：通用兼容 preset 的 persona 加入工具调用纪律（必填参数补全、参数错误修正后重试一次、不循环重试），显著提升第三方/本地模型在 Responses 模式下执行任务与处理长文本的稳定性与工具调用成功率；配合前端工具连续失败护栏（≥3 次拦截并取消回合），避免失控循环。
 
 ### v0.1.8 更新要点
 

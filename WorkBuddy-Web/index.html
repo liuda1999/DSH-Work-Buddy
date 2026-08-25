@@ -6317,7 +6317,7 @@ function harnessToWebMode(h) {
 }
 // 第三方模型时模式弹层的能力标注（仅追加展示，不改选择逻辑）
 const WB_MODE_CAP = {
-  universal: '这是给非 DeepSeek 第三方 API 用的：终端 + 文件编辑 + 技能（llm-wiki 等可用）。注意：本地文件系统无沙箱，请谨慎授权——权限保持「工作区写入」或更低；通用兼容性最好。',
+  universal: '这是给非 DeepSeek 第三方 API 用的：终端 + 文件编辑 + 文件搜索 + 网络搜索 + 技能（llm-wiki 等可用）。注意：本地文件系统无沙箱，请谨慎授权——权限保持「工作区写入」或更低；通用兼容性最好。',
   standard: '含多工具（shell/fs/技能/子代理/网络等）· 需模型具备 function calling',
   code: '含多工具（shell/fs/技能/子代理/网络等）· 需模型具备 function calling',
   cordis: 'Cordis 插件开发向 · 需模型具备 function calling 与复杂编排能力',
@@ -6710,7 +6710,7 @@ async function suggestUniversalPreset() {
   if (CHAT.preset !== 'standard' && CHAT.preset !== 'code' && CHAT.preset !== 'cordis') return;
   const ok = await wbConfirm({
     title: '建议切换通用兼容模式',
-    message: '当前是非 DeepSeek 第三方模型，工具调用能力可能不足。通用兼容模式专门为此设计：终端 + 文件编辑 + 技能（llm-wiki 等仍可用），兼容性最好。注意本地文件系统无沙箱——请谨慎授权，权限保持「工作区写入」或更低。',
+    message: '当前是非 DeepSeek 第三方模型，工具调用能力可能不足。通用兼容模式专门为此设计：终端 + 文件编辑 + 文件搜索 + 网络搜索 + 技能（llm-wiki 等仍可用），兼容性最好。注意本地文件系统无沙箱——请谨慎授权，权限保持「工作区写入」或更低。',
     okText: '切换通用兼容模式',
     cancelText: '保持当前模式'
   });

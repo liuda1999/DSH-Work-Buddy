@@ -179,23 +179,35 @@ function ensureSkills() {
 
 // ---------- 通用兼容模式 preset（Web 扩展组件，harness 用户 preset 根） ----------
 // harness 支持用户自定义 preset：<dshHome>/.agent-presets/<id>/agent.cordis.yml（trust:user，agentPreset.list 可见）。
-// 「通用兼容」装配：持久 bash + 文件编辑（fs-local/str-replace-editor）+ 技能目录（skill-filesystem/tool-skill）；
-// 刻意避开 subagent/workflow/goal/web/todo/plan/ask-user/jobs 等 DeepSeek 专用/复杂工具——
+// 「通用兼容」装配：终端（POSIX 持久 bash / Windows pwsh）+ 文件编辑 + 文件搜索（fs-search）+ 网络搜索（web_search）
+// + 技能目录（skill-filesystem/tool-skill）；全部使用 harness 既有工具（与 standard 同源，零新增依赖）。
+// 刻意避开 subagent/workflow/goal/todo/plan/ask-user/jobs 等 DeepSeek 专用/复杂工具——
 // 第三方/本地模型（非 DeepSeek 官方）在 function calling 下易因这些工具诱发失败循环（spec：thirdparty-model-preset-default）。
 // 不修改 deepseek-harness 任何源码/配置；目标位于用户主目录（项目树外，符合凭证/数据安全约定），幂等安装。
 const UNIVERSAL_PRESET_DIR = path.join(os.homedir(), '.dsh', '.agent-presets', 'universal');
 const UNIVERSAL_PRESET_YML = `# The universal agent preset: 通用兼容模式（WorkBuddy-Web 扩展组件）。
-# 工具面：持久 bash + 文件编辑 + 技能（skill）。刻意避开 subagent/workflow/goal/web/todo/plan/ask-user/jobs
-# 等 DeepSeek 专用/复杂工具——第三方/本地模型在 function calling 下易因这些工具诱发失败循环。
+# 工具面：终端（POSIX 持久 bash / Windows pwsh）+ 文件编辑 + 文件搜索 + 网络搜索 + 技能（skill）。
+# 全部为 harness 既有基础工具（web_search 默认启用、web_fetch 关闭——web_fetch 为 SSRF 原语，见 harness Web seam 笔记）。
+# 刻意避开 subagent/workflow/goal/todo/plan/ask-user/jobs 等 DeepSeek 专用/复杂工具——
+# 第三方/本地模型在 function calling 下易因这些工具诱发失败循环。
 
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
     text: >-
       You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
-      You operate in universal-compatible mode: use the terminal for command execution,
-      the file editor for precise file edits, and the skill tool to discover and load
-      installed skills (such as llm-wiki).
+      You operate in universal-compatible mode: use the terminal (bash on POSIX, PowerShell on
+      Windows) for command execution, the file editor for precise file edits, file search to find
+      code, web_search for current information, and the skill tool to discover and load installed
+      skills (such as llm-wiki).
+
+      Tool-calling discipline:
+      * Fill in EVERY required parameter of a tool call — never omit or skip any required field.
+      * The shell tools (bash/pwsh) require BOTH "command" AND "description": description is a
+        short present-tense phrase for the UI, e.g. "List files in current directory".
+      * If a tool call fails with an argument error (for example "missing required property"),
+        read the error, fix the arguments, and retry once with the corrected call. Never give up
+        on the first argument error, and never loop retrying the same broken call.
 
 - id: persistent-shell
   name: cordis:group
@@ -207,10 +219,12 @@ const UNIVERSAL_PRESET_YML = `# The universal agent preset: 通用兼容模式�
       name: '@deepseek-ai/dsh-terminal'
     - id: terminal-bash
       name: '@deepseek-ai/dsh-terminal-bash'
+      disabled: !!js process.platform === 'win32'
       config:
         timeoutMs: 300000
     - id: persistent-bash
       name: '@deepseek-ai/dsh-tool-bash-persistent'
+      disabled: !!js process.platform === 'win32'
       config:
         timeoutMs: 300000
         description: |-
@@ -219,6 +233,11 @@ const UNIVERSAL_PRESET_YML = `# The universal agent preset: 通用兼容模式�
           * You don't have access to the internet via this tool.
           * State is persistent across command calls and discussions with the user.
           * Please avoid commands that may produce a very large amount of output.
+
+# Windows 上 bash 不可用：用 harness 既有 pwsh 工具补位（与 standard 的 win32 分支一致）
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
 
 - id: filesystem
   name: cordis:group
@@ -235,13 +254,26 @@ const UNIVERSAL_PRESET_YML = `# The universal agent preset: 通用兼容模式�
       config:
         maxOutputChars: 16000
 
+# 文件搜索（ripgrep，跨平台；与 standard 同源）
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# 网络搜索（web_search 启用；web_fetch 关闭——SSRF 原语，保持最小面）
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: false
+    searchTimeoutMs: 60000
+
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'
 `;
 const UNIVERSAL_PRESET_META = `name: 通用兼容模式
-description: 持久 bash + 文件编辑 + 技能目录（llm-wiki 等技能可用），面向第三方/本地模型的最小工具面。
+description: 终端（bash/pwsh）+ 文件编辑 + 文件搜索 + 网络搜索 + 技能目录（llm-wiki 等技能可用），面向第三方/本地模型的最小工具面。
 order: 5
 `;
 // 幂等安装：目标目录已有 agent.cordis.yml 则跳过；写失败不阻塞启动
