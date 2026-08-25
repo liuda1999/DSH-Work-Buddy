@@ -209,6 +209,13 @@ const UNIVERSAL_PRESET_YML = `# The universal agent preset: 通用兼容模式�
         read the error, fix the arguments, and retry once with the corrected call. Never give up
         on the first argument error, and never loop retrying the same broken call.
 
+      Answer discipline:
+      * Always write your final answer to the user in the visible text output. Never leave the
+        answer only in your reasoning — the user cannot see reasoning as an answer.
+      * Reasoning is only for your own analysis; once you have the answer, emit it as text.
+      * If a task produces no answer yet, either call a tool or say so in text — do not finish
+        the turn with reasoning alone.
+
 - id: persistent-shell
   name: cordis:group
   group: true
