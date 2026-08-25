@@ -8636,6 +8636,19 @@ function deriveKeyRef(route) {
 const ROUTE_RE = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const SSC = { deepseek: null, defModel: null, piAi: null, custom: [], customKeyState: {}, catalog: [], activeProviders: {}, catEdit: null };
 
+// 确保 SSC.piAi（llm-pi-ai 命名空间）已加载：设置页首载失败（如智能体冷启动未就绪）时 SSC.piAi 保持 null，
+// 此时保存/移除 Provider 直接访问 SSC.piAi.revision 会抛 TypeError（can't access property "revision"）。
+// 写操作前调用本函数兜底补拉；仍失败返回 false，由调用方给出中文提示。
+async function ensurePiAi() {
+  if (SSC.piAi) return true;
+  try {
+    const d = await wbRpc('settings.describe', {});
+    const piNs = (d.namespaces || []).find((n) => n.ns === 'llm-pi-ai') || null;
+    SSC.piAi = { ns: piNs, value: (piNs && piNs.value) || {}, revision: piNs ? piNs.revision : 0 };
+    return true;
+  } catch (e) { return false; }
+}
+
 async function loadSettingsPage() {
   const badge = document.getElementById('scApiBadge');
   badge.textContent = '加载中...';
@@ -9042,6 +9055,8 @@ async function saveCustomProvider() {
   msg.className = 'set-msg';
   msg.textContent = '保存中...';
   try {
+    // 设置数据可能未加载（首载失败/智能体冷启动竞态）：兜底补拉，避免 SSC.piAi 为 null 崩溃
+    if (!(await ensurePiAi())) { msg.className = 'set-msg err'; msg.textContent = '设置数据未加载（智能体可能未就绪），请稍后重试。'; return; }
     const route = document.getElementById('scCustomRoute').value.trim();
     const baseURL = document.getElementById('scCustomBaseURL').value.trim();
     const displayName = document.getElementById('scCustomName').value.trim() || route;
@@ -9086,6 +9101,7 @@ async function removeCustomProvider(route) {
   msg.className = 'set-msg';
   msg.textContent = '移除中...';
   try {
+    if (!(await ensurePiAi())) { msg.className = 'set-msg err'; msg.textContent = '设置数据未加载（智能体可能未就绪），请稍后重试。'; return; }
     const res = await wbRpc('settings.mutate', { ns: 'llm-pi-ai', ops: [{ op: 'unset', path: ['providers', route] }], expectedRevision: SSC.piAi.revision });
     SSC.piAi.revision = res.revision;
     SSC.piAi.value = res.value;
@@ -9157,6 +9173,7 @@ async function saveCatalogProvider(provider) {
   const msgEl = form.querySelector('.set-msg');
   msgEl.className = 'set-msg'; msgEl.textContent = '保存中...';
   try {
+    if (!(await ensurePiAi())) { msgEl.className = 'set-msg err'; msgEl.textContent = '设置数据未加载（智能体可能未就绪），请稍后重试。'; return; }
     const key = form.querySelector('[data-cat-key]').value.trim();
     const base = form.querySelector('[data-cat-base]').value.trim();
     const ref = deriveKeyRef(provider);
@@ -9189,6 +9206,7 @@ async function saveCatalogProvider(provider) {
 async function removeCatalogProvider(provider) {
   if (!window.confirm(`确定移除内置供应商「${provider}」的配置？将同时删除其 API 密钥并恢复未启用状态。`)) return;
   try {
+    if (!(await ensurePiAi())) { const m = document.getElementById('scCatalogMsg'); m.className = 'set-msg err'; m.textContent = '设置数据未加载（智能体可能未就绪），请稍后重试。'; return; }
     const res = await wbRpc('settings.mutate', { ns: 'llm-pi-ai', ops: [{ op: 'unset', path: ['providers', provider] }], expectedRevision: SSC.piAi.revision });
     SSC.piAi.revision = res.revision;
     SSC.piAi.value = res.value;
