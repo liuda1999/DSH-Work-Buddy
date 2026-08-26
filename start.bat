@@ -7,10 +7,15 @@ set "HARNESS=%ROOT%deepseek-harness\deepseek-harness-master"
 set "WIKI=%ROOT%llm-wiki\project"
 
 echo ==========================================
-echo   DSH Work Buddy 一键启动  (v0.1.9)
-echo   固定端口: http://127.0.0.1:8765
+echo   DSH Work Buddy 一键启动  (v0.1.95)
+echo   默认端口: 8765（支持同局域网跨设备访问）
 echo ==========================================
 echo.
+
+rem ---- 网络绑定默认值：0.0.0.0 允许同局域网访问；仅本机访问时可改为 127.0.0.1 ----
+if "%DSH_WB_HOST%"=="" set "DSH_WB_HOST=0.0.0.0"
+if "%DSH_WB_PORT%"=="" set "DSH_WB_PORT=8765"
+set "DSH_WB_HARNESS_HOST=127.0.0.1"
 
 where node >nul 2>nul
 if errorlevel 1 (
@@ -107,16 +112,16 @@ if not exist "%WIKI%\docs\.vitepress\dist" (
 )
 
 rem ---- 4/5 端口检查 ----
-netstat -ano | findstr ":8765" | findstr "LISTENING" >nul
+netstat -ano | findstr ":%DSH_WB_PORT%" | findstr "LISTENING" >nul
 if not errorlevel 1 (
-  echo [错误] 端口 8765 已被占用，请先关闭旧实例再运行本脚本
+  echo [错误] 端口 %DSH_WB_PORT% 已被占用，请先关闭旧实例再运行本脚本
   pause
   exit /b 1
 )
 
 rem ---- 5/5 启动 Web（server.js 会自动拉起 dsh 智能体服务，并托管 Wiki 文档库）----
 echo [4/5] 启动 Web 控制台并拉起智能体...
-start "" "http://127.0.0.1:8765"
+start "" "http://127.0.0.1:%DSH_WB_PORT%"
 pushd "%ROOT%WorkBuddy-Web"
 node server.js
 popd

@@ -1,7 +1,7 @@
 # AGENTS.md — DSH Work Buddy 项目指南与运维手册
 
 > 本文件是智能体读取的项目总纲：项目是什么、由哪些组件构成、每部分如何运作、如何启动与运维。
-> 项目版本：**v0.1.9**（见根目录 `VERSION`）。修改本项目时请先阅读本节与对应模块章节，遵循末尾「项目约定」。
+> 项目版本：**v0.1.95**（见根目录 `VERSION`）。修改本项目时请先阅读本节与对应模块章节，遵循末尾「项目约定」。
 
 ---
 
@@ -11,7 +11,7 @@
 
 | 组件 | 目录 | 端口/形态 | 角色 |
 |---|---|---|---|
-| **WorkBuddy-Web** | `WorkBuddy-Web/` | `127.0.0.1:8765`，一体化网关进程 | 前端控制台（8 个页面）+ 本地业务 API + RPC 转发 + WS 桥 + 静态托管 + 组件拉起/自愈/优雅关闭 |
+| **WorkBuddy-Web** | `WorkBuddy-Web/` | `0.0.0.0:8765`，一体化网关进程（默认监听所有网卡，支持同局域网跨设备访问） | 前端控制台（8 个页面）+ 本地业务 API + RPC 转发 + WS 桥 + 静态托管 + 组件拉起/自愈/优雅关闭 |
 | **deepseek-harness** | `deepseek-harness/deepseek-harness-master/` | `127.0.0.1:3080`，**由网关 spawn 的子进程** | dsh 智能体运行框架（会话/模型/权限/命令/技能/插件运行时） |
 | **llm-wiki** | `llm-wiki/project/` | 静态构建产物，由网关在 `/llm-wiki-plugin/` 托管 | VitePress 文档库（智能体知识库），无独立进程 |
 | **技能** | `.dsh/skills/llm-wiki/` | 文件 | llm-wiki 技能（SKILL.md + 脚本），网关启动时幂等安装 |
@@ -24,7 +24,7 @@
 
 ```
 e:\worke
-├── VERSION                 # 项目顶层版本号（当前 0.1.9）
+├── VERSION                 # 项目顶层版本号（当前 0.1.95）
 ├── README.md               # 对外说明
 ├── start.bat               # 一键启动（Windows）：依赖/构建（幂等）→ 端口检查 → 启动 Web + 拉起智能体
 ├── start.sh                # 一键启动（macOS/Linux）：等价 bash 逻辑，首次运行先 chmod +x
@@ -87,7 +87,7 @@ e:\worke
    - **优雅关闭**：`SIGINT/SIGTERM` → 关 http server → 销毁 WS 连接 → 杀智能体子进程（SIGTERM → taskkill /T /F 兜底）→ 3s 强制退出；`exit` 钩子同步兜底 kill。**组件同关，不留孤儿**。
    - **自愈**：`reviveHarness()`（RPC 失败时冷却 10s 自动拉起，配合前端 waitHarnessReady 轮询）。
    - `server.on('error')`：端口占用友好中文提示并退出。
-   - 端口可配：`DSH_WB_PORT/HOST`、`DSH_WB_HARNESS_PORT/HOST`（默认 8765 / 127.0.0.1 / 3080）。
+   - 端口/主机可配：`DSH_WB_HOST`（默认 `0.0.0.0`，同局域网访问；改 `127.0.0.1` 则仅本机）、`DSH_WB_PORT`（默认 `8765`）；`DSH_WB_HARNESS_HOST`（默认 `127.0.0.1`，不建议改，3080 由网关反代）、`DSH_WB_HARNESS_PORT`（默认 `3080`）。启动日志会自动打印本机 IPv4 对应的访问地址，Windows 首次被访问时需在防火墙弹窗选择"允许"（放行 8765 入站）。
 
 ---
 
@@ -119,7 +119,7 @@ start.bat        # Windows：依赖/构建（首次较慢，幂等）→ 端口�
 ./start.sh       # macOS/Linux：等价逻辑（bash），首次运行先 chmod +x start.sh
 ```
 或直接：`cd WorkBuddy-Web && node server.js`（自动拉起智能体 3080 + 检查 Wiki + 安装技能）。
-就绪标志：网关日志出现「dsh 智能体服务就绪」「Wiki 文档库就位」；访问 `http://127.0.0.1:8765`。
+就绪标志：网关日志出现「dsh 智能体服务就绪」「Wiki 文档库就位」；本机访问 `http://127.0.0.1:8765`；同局域网跨设备访问 `http://<本机IPv4>:8765`（如 `http://192.168.0.100:8765`，启动日志中已列出）。
 
 > **start.bat 编码要求（重要）**：批处理必须以 **UTF-8 BOM + CRLF 换行**保存（.gitattributes 已强制 `*.bat eol=crlf`）。
 > 若文件被保存为无 BOM UTF-8 或 LF 换行，中文 Windows（GBK 代码页）下 cmd 解析会行错乱
@@ -161,6 +161,12 @@ start.bat        # Windows：依赖/构建（首次较慢，幂等）→ 端口�
 - **start.bat 报 `xxx is not recognized` 或中文乱码**：文件被存成无 BOM UTF-8 / LF 换行。用 UTF-8 BOM + CRLF 重新保存（或 `git checkout -- start.bat` 恢复）。
 - **首次启动安装依赖失败**：pnpm 不在 PATH 时走 corepack / `npx pnpm@11.7.0` 兜底（需网络）；确保网络可用或先手动 `corepack enable`。
 - **端口 8765 被占**：网关启动即报「端口已被占用」并退出 → 关闭旧实例。
+- **局域网访问 8765 不通（浏览器 ERR_CONNECTION_REFUSED / 超时）**：
+  1. 确认启动日志含「已允许同局域网跨设备访问」且绑定 `0.0.0.0:8765`；如仍监听 `127.0.0.1`，设置环境变量 `DSH_WB_HOST=0.0.0.0` 重启。
+  2. Windows：检查「高级安全 Windows Defender 防火墙 → 入站规则」是否放行 `node.exe` / 8765 端口；或首次访问时弹出的防火墙对话框点击「允许访问 → 专用网络」。可临时用管理员 PowerShell 加规则：`New-NetFirewallRule -DisplayName "DSH Work Buddy 8765" -Direction Inbound -Protocol TCP -LocalPort 8765 -Action Allow`。
+  3. 确认两台设备处于同一子网（同网段 IP / 同一 Wi-Fi；不跨 VLAN / VPN），本机 IPv4 与客户端能互相 `ping` 通。
+  4. 服务器本机先用 `curl http://127.0.0.1:8765/` 验证站点有响应，再在客户端用 `curl http://<本机IPv4>:8765/` 验证，必要时 `netstat -ano | findstr :8765` 确认 `LISTENING` 在 `0.0.0.0`。
+- **仍想仅本机访问**：`set DSH_WB_HOST=127.0.0.1`（Windows）或 `export DSH_WB_HOST=127.0.0.1`（*nix）后再启动即可回到仅回环访问。
 - **端口 3080 被占（孤儿/外部）**：网关日志提示复用；若实例异常，清理 3080 后重启。
 - **对话弹窗提示「智能体未连接/等待服务启动」**：网关 RPC 失败会触发自愈拉起（约 10s 冷却），前端 waitHarnessReady 轮询等待；仍失败查 `node server.js` 终端日志。
 - **模型不可用/目录为空**：设置中心检查 Provider 凭证（`credentials.describe`）与默认模型；对话模型弹层点「⟳ 刷新」。
@@ -168,7 +174,7 @@ start.bat        # Windows：依赖/构建（首次较慢，幂等）→ 端口�
 - **测试需隔离环境**：用 `DSH_WB_PORT` / `DSH_WB_HARNESS_PORT` / `DSH_HOME` 起第二个实例（不影响现网）。
 
 ### 7.5 版本升级
-版本号同步修改 4 处：`VERSION`、`WorkBuddy-Web/package.json`、`start.bat`（v 前缀 banner）、`README.md`（版本/目录/分发包名/版本策略）。提交 git：`git add` 相关文件后 commit（仓库为纯本地，master 分支，不 push）。
+版本号同步修改 5 处：`VERSION`、`WorkBuddy-Web/package.json`、`start.bat`（v 前缀 banner）、`start.sh`（v 前缀 banner）、`README.md`（版本/目录/分发包名/版本策略）。提交 git：`git add` 相关文件后 commit。
 
 ---
 

@@ -2,7 +2,7 @@
 
 DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集成了任务管理控制台（WorkBuddy-Web）、DeepSeek Harness 智能体组件和 LLM Wiki 文档组件。
 
-- **版本**：`0.1.9`
+- **版本**：`0.1.95`
 - **项目标识**：见根目录 [`VERSION`](./VERSION)
 
 ---
@@ -10,7 +10,7 @@ DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集�
 ## 目录结构
 
 ```
-DSH-WorkBuddy-0.1.9/
+DSH-WorkBuddy-0.1.95/
 ├── VERSION                 # 项目顶层版本号
 ├── README.md               # 本文件
 ├── start.bat               # 一键启动脚本（Windows，Web + 智能体）
@@ -30,8 +30,8 @@ DSH-WorkBuddy-0.1.9/
 任务管理控制台前端，提供任务看板、KPI 统计、项目总览、智能体对话等功能。入口文件为单文件 HTML 应用，配合 `server.js` 一体化服务运行。
 
 - **入口文件**：`WorkBuddy-Web/index.html`
-- **一体化服务**：`WorkBuddy-Web/server.js`（固定端口 `127.0.0.1:8765`）
-- **版本**：`0.1.9`
+- **一体化服务**：`WorkBuddy-Web/server.js`（固定端口 `0.0.0.0:8765`）
+- **版本**：`0.1.95`
 
 ### 2. deepseek-harness
 
@@ -137,7 +137,7 @@ pnpm docs:preview
 本项目分发包为根目录下的：
 
 ```
-DSH-WorkBuddy-0.1.9.zip
+DSH-WorkBuddy-0.1.95.zip
 ```
 
 该压缩包已排除以下内容：
@@ -155,9 +155,15 @@ DSH-WorkBuddy-0.1.9.zip
 
 ## 版本策略
 
-- 整个 DSH Work Buddy 项目对外版本为 `0.1.9`（见 `VERSION`）。
-- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.9`。
+- 整个 DSH Work Buddy 项目对外版本为 `0.1.95`（见 `VERSION`）。
+- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.95`。
 - `deepseek-harness`、`llm-wiki` 等组件保留其自身原有版本，不强制统一。
+
+### v0.1.95 更新要点
+
+- **数据存储加固（本地业务数据）**：插件社区收藏、归档组清单、智能体模板清单统一迁移到版本化信封（`{version, updatedAt, data}`）+ 原子写入（临时文件替换 + `.bak` 备份）的持久化方案（`modules/datastore.js`），旧裸数组格式自动迁移、损坏 JSON 回退兜底，彻底避免半写入损坏；数据目录支持 `DSH_WB_DATA_DIR` 环境变量覆盖（默认 `data/`）。
+- **接口诚实返回（清理「假成功」）**：工作区文件接口 `GET /api/workspaces/<id>/files` 改为真实扫描工作区目录（最深 4 层，跳过隐藏文件与 node_modules），不存在的工作区返回 `404 workspace-not-found`；插件/技能启停接口统一返回 `501 not-implemented`；不存在的智能体模板 PUT/DELETE 返回 `404 template-not-found`，前端不再被「假成功」误导。
+- **导航路由拆分**：hash 路由与页面切换逻辑从 `index.html` 拆分为独立模块 `modules/navigation.js`（页面行为不变），便于维护；网关新增 `/modules/` 静态托管。
 
 ### v0.1.9 更新要点
 

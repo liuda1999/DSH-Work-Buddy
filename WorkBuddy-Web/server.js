@@ -5,9 +5,12 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
+const { openJsonStore, atomicWriteJson, resolveInside } = require('./modules/datastore');
 
-const HOST = process.env.DSH_WB_HOST || '127.0.0.1';
+const HOST = process.env.DSH_WB_HOST || '0.0.0.0';
 const PORT = Number(process.env.DSH_WB_PORT || 8765);
+// dsh 智能体默认仅本机回环监听即可（外部访问统一经 8765 网关反代，自带 Origin 围栏改写）。
+// 若确实需要直连 3080，可显式设置 DSH_WB_HARNESS_HOST=0.0.0.0（不推荐，会绕过网关鉴权链路）。
 const HARNESS_HOST = process.env.DSH_WB_HARNESS_HOST || '127.0.0.1';
 const HARNESS_PORT = Number(process.env.DSH_WB_HARNESS_PORT || 3080);
 const HARNESS_DIR = path.resolve(__dirname, '..', 'deepseek-harness', 'deepseek-harness-master');
@@ -26,8 +29,33 @@ let harnessProcess = null;
 let harnessUp = false;
 let harnessBooting = false;   // 拉起轮询中（防重复 spawn）
 
+// 获取本机非回环 IPv4 地址列表（用于启动日志中提示局域网访问地址）
+function getLanIpv4List() {
+  const result = [];
+  try {
+    const nifs = os.networkInterfaces();
+    for (const [name, list] of Object.entries(nifs)) {
+      if (!list) continue;
+      for (const n of list) {
+        if (n.family !== 'IPv4' || n.internal) continue;
+        result.push({ name, address: n.address });
+      }
+    }
+  } catch (e) { /* ignore */ }
+  return result;
+}
+function formatBindUrls() {
+  const primary = (HOST === '0.0.0.0' || HOST === '::') ? '127.0.0.1' : HOST;
+  const lines = [`http://${primary}:${PORT}`];
+  if (HOST === '0.0.0.0' || HOST === '::') {
+    for (const n of getLanIpv4List()) lines.push(`http://${n.address}:${PORT}  (${n.name})`);
+  }
+  return lines;
+}
+
 // ---------- 数据目录（用户工作区根 / 任务专属目录） ----------
-const DATA_DIR = path.join(__dirname, 'data');
+// 支持 DSH_WB_DATA_DIR 覆盖（测试/迁移隔离用，默认项目内 data/）
+const DATA_DIR = path.resolve(process.env.DSH_WB_DATA_DIR || path.join(__dirname, 'data'));
 const WS_DATA_DIR = path.join(DATA_DIR, 'workspaces');
 const TASK_DATA_DIR = path.join(DATA_DIR, 'tasks');
 // 智能体内置记忆库：按模板 id 分目录存放 MEMORY.md（长期画像，跨任务沉淀）
@@ -42,6 +70,7 @@ function ensureDataDirs() {
   try {
     fs.mkdirSync(WS_DATA_DIR, { recursive: true });
     fs.mkdirSync(TASK_DATA_DIR, { recursive: true });
+    fs.mkdirSync(AGENTS_DATA_DIR, { recursive: true });
     fs.mkdirSync(WIKI_STORE_DIR, { recursive: true });
     fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
   } catch (e) {
@@ -160,7 +189,8 @@ function serveWiki(urlPath, res, req) {
 // Wiki 就位检查（启动日志）：产物在则报就位 URL，缺失则给出构建指引
 function ensureWiki() {
   if (fs.existsSync(path.join(WIKI_DIST, 'index.html'))) {
-    console.log(`[DSH Work Buddy] Wiki 文档库就位：http://${HOST}:${PORT}${WIKI_BASE}`);
+    const baseUrls = formatBindUrls().map((u) => u + WIKI_BASE);
+    console.log(`[DSH Work Buddy] Wiki 文档库就位：${baseUrls.join('  /  ')}`);
   } else {
     console.warn(`[DSH Work Buddy] Wiki 文档库未就位（构建产物缺失）。构建方法：cd llm-wiki/project && pnpm install && pnpm docs:build，或使用根目录 start.bat 一键构建。`);
   }
@@ -443,7 +473,8 @@ const isLocalApi = (p) => p === '/api/workspaces/sync-harness' || LOCAL_API_PREF
 const WORKBUDDY_STATIC = (p) =>
   p === '/' || p === '/index.html' ||
   p === '/logo.jpg' || p === '/favicon.ico' || p === '/favicon.png' ||
-  p.startsWith('/card-bg/');
+  p.startsWith('/card-bg/') ||
+  p.startsWith('/modules/');
 
 // 解析转发目标路径：/harness/ 前缀去掉
 function resolveProxyPath(url) {
@@ -575,21 +606,22 @@ const AGENT_TEMPLATES_SEED = [
   }
 ];
 const AGENT_TEMPLATES_FILE = path.join(AGENTS_DATA_DIR, 'templates.json');
+// 智能体模板清单落盘：版本化信封 + 原子写入（.bak 备份），网关重启不丢失
 function saveAgentTemplates() {
   try {
-    fs.mkdirSync(AGENTS_DATA_DIR, { recursive: true });
-    fs.writeFileSync(AGENT_TEMPLATES_FILE, JSON.stringify(db.agentTemplates, null, 2), 'utf8');
+    openJsonStore(AGENT_TEMPLATES_FILE, { initial: [] }).replace(db.agentTemplates);
   } catch (e) { /* 写盘失败不阻塞模板操作 */ }
 }
+// 加载模板清单：文件缺失（全新安装）→ 注入代码级预置（不落盘）；文件存在 → 读取（旧裸数组自动迁移为版本信封）
 function loadAgentTemplates() {
-  let loaded = null;
   try {
-    loaded = JSON.parse(fs.readFileSync(AGENT_TEMPLATES_FILE, 'utf8'));
-  } catch (e) { /* 文件不存在或损坏 */ }
-  if (Array.isArray(loaded)) {
-    db.agentTemplates = loaded.filter((t) => t && t.id);
-    return;
-  }
+    const store = openJsonStore(AGENT_TEMPLATES_FILE, { initial: [], allowCreate: false });
+    if (store.exists) {
+      // 文件存在：即使为空也以文件为准（用户显式清空的清单保持为空）
+      db.agentTemplates = Array.isArray(store.data) ? store.data.filter((t) => t && t.id) : [];
+      return;
+    }
+  } catch (e) { /* 文件损坏 → 走 seed 兜底 */ }
   // 全新安装（发布包首次启动，无 templates.json）：注入代码级预置智能体（不落盘，
   // 保持 data/ 为空以满足打包脱敏；用户首次增删改时固化到盘）
   db.agentTemplates = AGENT_TEMPLATES_SEED.map((t) => ({ ...t }));
@@ -644,14 +676,14 @@ const PLUGIN_COMMUNITY_SEED = [
 const PLUGIN_COMMUNITY_FILE = path.join(DATA_DIR, 'plugin-community.json');
 function loadPluginCommunity() {
   try {
-    const j = JSON.parse(fs.readFileSync(PLUGIN_COMMUNITY_FILE, 'utf8'));
-    db.pluginCommunity = Array.isArray(j) ? j.filter((p) => p && p.id) : [];
+    // 旧裸数组自动迁移为版本信封；文件缺失不建空文件（首次收藏时才落盘）
+    const store = openJsonStore(PLUGIN_COMMUNITY_FILE, { initial: [], allowCreate: false });
+    db.pluginCommunity = Array.isArray(store.data) ? store.data.filter((p) => p && p.id) : [];
   } catch (e) { db.pluginCommunity = []; }
 }
 function savePluginCommunity() {
   try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(PLUGIN_COMMUNITY_FILE, JSON.stringify(db.pluginCommunity, null, 2), 'utf8');
+    openJsonStore(PLUGIN_COMMUNITY_FILE, { initial: [] }).replace(db.pluginCommunity);
   } catch (e) { /* 写盘失败不阻塞收藏操作 */ }
 }
 loadPluginCommunity();
@@ -724,27 +756,25 @@ function loadTasksFromDisk() {
 }
 
 // ---------- 归档组持久化（data/archive/groups.json：组清单，含手动新建的空组） ----------
-// 启动加载组清单：文件不存在/损坏/为空 → 给默认组并落盘（保证组 id 跨重启稳定）
+// 启动加载组清单：文件不存在/损坏/为空 → 给默认组并落盘（保证组 id 跨重启稳定）；旧裸数组自动迁移为版本信封
 function loadArchiveGroups() {
+  let groups = [];
   try {
-    const arr = JSON.parse(fs.readFileSync(ARCHIVE_GROUPS_FILE, 'utf8'));
-    if (Array.isArray(arr)) {
-      const groups = arr.filter((g) => g && g.id && g.name);
-      if (groups.length) {
-        db.archiveGroups = groups;
-        return;
-      }
-    }
+    const arr = openJsonStore(ARCHIVE_GROUPS_FILE, { initial: [] }).data;
+    if (Array.isArray(arr)) groups = arr.filter((g) => g && g.id && g.name);
   } catch (e) { /* 文件缺失/损坏 → 默认组 */ }
+  if (groups.length) {
+    db.archiveGroups = groups;
+    return;
+  }
   db.archiveGroups = [{ id: nextId('ag'), name: '默认组' }];
   saveArchiveGroups();
 }
 
-// 归档组清单落盘（新建组后调用）
+// 归档组清单落盘（新建组后调用）：版本化信封 + 原子写入
 function saveArchiveGroups() {
   try {
-    fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
-    fs.writeFileSync(ARCHIVE_GROUPS_FILE, JSON.stringify(db.archiveGroups, null, 2), 'utf8');
+    openJsonStore(ARCHIVE_GROUPS_FILE, { initial: [] }).replace(db.archiveGroups);
   } catch (e) {
     console.warn('[DSH Work Buddy] 写入归档组清单失败：', e.message);
   }
@@ -774,6 +804,27 @@ loadArchiveGroups(); // 归档组清单（groups.json）
 
 // 工作区路径缓存（workspaceId → path）：GET /api/workspaces 时填充；任务目录解析未命中时查 workspace.list 补齐
 const workspaceCache = new Map();
+
+// 递归扫描工作区文件（最深 4 层，跳过隐藏文件与 node_modules），返回相对路径清单
+function workspaceFiles(root) {
+  const files = [];
+  const visit = (dir, relative, depth) => {
+    if (depth > 4) return;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+    for (const ent of entries) {
+      if (ent.name.startsWith('.') || ent.name === 'node_modules') continue;
+      const full = path.join(dir, ent.name);
+      const rel = relative ? `${relative}/${ent.name}` : ent.name;
+      if (ent.isDirectory()) visit(full, rel, depth + 1);
+      else if (ent.isFile()) {
+        try { const st = fs.statSync(full); files.push({ name: rel, size: st.size, modifiedAt: st.mtime.toISOString() }); } catch (_) { /* 文件消失 */ }
+      }
+    }
+  };
+  visit(root, '', 0);
+  return files.sort((a, b) => a.name.localeCompare(b.name));
+}
 
 // 解析任务专属目录：workspaceId 有效时优先建在工作区目录下（<工作区path>/<taskId>），否则兜底 data/tasks/<taskId>
 async function taskDirFor(taskId, workspaceId) {
@@ -1583,7 +1634,24 @@ async function handleLocalApi(req, res, urlPath, params) {
     }
   }
   if (urlPath.startsWith('/api/workspaces/') && urlPath.endsWith('/files') && req.method === 'GET') {
-    return sendJson(res, 200, { files: [] });
+    const id = decodeURIComponent(urlPath.split('/')[3] || '');
+    // 工作区真实文件扫描：workspaceId → path（缓存 → workspace.list 补齐 → 任务目录兜底），不存在返回 404
+    let root = workspaceCache.get(id);
+    if (!root) {
+      try {
+        const v = await harnessRpc('workspace.list', {});
+        (v.items || []).forEach((w) => { if (w.workspaceId) workspaceCache.set(w.workspaceId, w.path); });
+        root = workspaceCache.get(id);
+      } catch (_) { /* 智能体暂不可用：仅用缓存/本地工作区 */ }
+    }
+    if (!root || !fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+      const task = db.tasks.find((t) => t.workspaceId === id && t.dir);
+      root = task && path.dirname(task.dir);
+    }
+    if (!root || !fs.existsSync(root)) {
+      return sendJson(res, 404, { error: { code: 'workspace-not-found', message: '工作区不存在或不可访问' } });
+    }
+    return sendJson(res, 200, { workspaceId: id, files: workspaceFiles(root) });
   }
   // 删除工作区：仅解除 dsh 注册（磁盘目录与文件保留，与 dsh 语义一致）
   if (urlPath.startsWith('/api/workspaces/') && req.method === 'DELETE') {
@@ -2272,7 +2340,8 @@ function findArchiveSessionDir(groupName, taskId) {
     return sendJson(res, 200, { plugins, source: 'harness' });
   }
   if (urlPath === '/api/resources/plugins/toggle' && req.method === 'POST') {
-    return sendJson(res, 200, { success: true });
+    // 插件启停尚未实现：诚实返回 501，不再伪装成功
+    return sendJson(res, 501, { error: { code: 'not-implemented', message: '插件启停功能尚未实现' } });
   }
   // 技能 Tab：对接 dsh skill.list（按目录会话的项目根解析，懒建 + 固定 sessionId 幂等）
   if (urlPath === '/api/resources/skills' && req.method === 'GET') {
@@ -2293,7 +2362,8 @@ function findArchiveSessionDir(groupName, taskId) {
     }
   }
   if (urlPath === '/api/resources/skills/toggle' && req.method === 'POST') {
-    return sendJson(res, 200, { success: true });
+    // 技能启停尚未实现：诚实返回 501，不再伪装成功
+    return sendJson(res, 501, { error: { code: 'not-implemented', message: '技能启停功能尚未实现' } });
   }
   if (urlPath === '/api/resources/agent-templates' && req.method === 'GET') {
     return sendJson(res, 200, { templates: db.agentTemplates });
@@ -2316,11 +2386,16 @@ function findArchiveSessionDir(groupName, taskId) {
     const id = urlPath.split('/').pop();
     const body = await readBody(req);
     const tpl = db.agentTemplates.find((t) => t.id === id);
-    if (tpl) { Object.assign(tpl, body); saveAgentTemplates(); }
-    return sendJson(res, 200, tpl || {});
+    if (!tpl) return sendJson(res, 404, { error: { code: 'template-not-found', message: '智能体模板不存在' } });
+    Object.assign(tpl, body);
+    saveAgentTemplates();
+    return sendJson(res, 200, tpl);
   }
   if (urlPath.match(/^\/api\/resources\/agent-templates\/[^/]+$/) && req.method === 'DELETE') {
     const id = urlPath.split('/').pop();
+    if (!db.agentTemplates.some((t) => t.id === id)) {
+      return sendJson(res, 404, { error: { code: 'template-not-found', message: '智能体模板不存在' } });
+    }
     db.agentTemplates = db.agentTemplates.filter((t) => t.id !== id);
     saveAgentTemplates(); // 同步落盘，重启后删除状态保持
     // 同步删除模板记忆目录（data/agents/<id>/），否则孤儿恢复逻辑会在重启后把已删除模板「复活」。
@@ -2497,7 +2572,12 @@ if (wbShutdownFile) {
 
 // ---------- 启动 ----------
 server.listen(PORT, HOST, () => {
-  console.log(`DSH Work Buddy server running at http://${HOST}:${PORT}`);
+  const urls = formatBindUrls();
+  console.log(`DSH Work Buddy server listening on ${HOST}:${PORT}`);
+  console.log(`  访问地址：${urls.join('\n              ')}`);
+  if (HOST === '0.0.0.0' || HOST === '::') {
+    console.log(`  提示：已允许同局域网跨设备访问；同网段设备可用上方 IPv4 地址访问，首次访问需放行 Windows 防火墙 8765 端口入站。`);
+  }
   ensureHarness(); // 智能体组件：探测 → 未运行则自动拉起（127.0.0.1:3080）
   ensureWiki();    // Wiki 文档库：构建产物就位检查（/llm-wiki-plugin/）
   ensureSkills();  // dsh 技能：llm-wiki 项目技能安装到 .dsh/skills/（幂等）

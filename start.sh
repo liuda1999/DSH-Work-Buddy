@@ -9,10 +9,15 @@ HARNESS="$ROOT/deepseek-harness/deepseek-harness-master"
 WIKI="$ROOT/llm-wiki/project"
 
 echo "=========================================="
-echo "  DSH Work Buddy 一键启动  (v0.1.9)"
-echo "   固定端口: http://127.0.0.1:8765"
+echo "  DSH Work Buddy 一键启动  (v0.1.95)"
+echo "   默认端口: 8765（支持同局域网跨设备访问）"
 echo "=========================================="
 echo
+
+# ---- 网络绑定默认值：0.0.0.0 允许同局域网访问；仅本机访问时可改为 127.0.0.1 ----
+export DSH_WB_HOST="${DSH_WB_HOST:-0.0.0.0}"
+export DSH_WB_PORT="${DSH_WB_PORT:-8765}"
+export DSH_WB_HARNESS_HOST="${DSH_WB_HARNESS_HOST:-127.0.0.1}"
 
 # ---- 0/5 检查 Node.js（harness 要求 ^22.19 || >=24）----
 if ! command -v node >/dev/null 2>&1; then
@@ -72,17 +77,17 @@ else
 fi
 
 # ---- 4/5 端口检查 ----
-if lsof -i :8765 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "[错误] 端口 8765 已被占用，请先关闭旧实例再运行本脚本"
+if lsof -i :"$DSH_WB_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "[错误] 端口 $DSH_WB_PORT 已被占用，请先关闭旧实例再运行本脚本"
   exit 1
 fi
 
 # ---- 5/5 启动 Web（server.js 会自动拉起 dsh 智能体服务，并托管 Wiki 文档库）----
 echo "[4/5] 启动 Web 控制台并拉起智能体..."
 if command -v open >/dev/null 2>&1; then
-  (open "http://127.0.0.1:8765" >/dev/null 2>&1 || true) &
+  (open "http://127.0.0.1:$DSH_WB_PORT" >/dev/null 2>&1 || true) &
 elif command -v xdg-open >/dev/null 2>&1; then
-  (xdg-open "http://127.0.0.1:8765" >/dev/null 2>&1 || true) &
+  (xdg-open "http://127.0.0.1:$DSH_WB_PORT" >/dev/null 2>&1 || true) &
 fi
 (cd "$ROOT/WorkBuddy-Web" && node server.js)
 
