@@ -1029,6 +1029,53 @@ const LLM_WIKI_INDEX_MD = `# llm-wiki 文档库
 知识源位于 \`sources/\` 目录。
 `;
 
+// 注入到各任务目录的 llm-wiki 知识库调用说明（.workbuddy/llm-wiki-guide.md，幂等写入）
+// 目的：技能清单为空/未安装时，会话内智能体仍可凭此说明通过 curl 调用网关 Wiki API 读写知识库。
+// 注意：与任务目录 AGENTS.md 中动态注入的「项目工作指南」不同，本文件为静态说明，不随 wiki 模式/路径变化。
+function LLM_WIKI_GUIDE_MD() {
+  return `# llm-wiki 知识库调用说明
+
+本任务的工作区数据（会话/文件）以任务目录为边界；项目知识库（Wiki 文档库）由网关 8765 统一托管，
+智能体可通过 HTTP 调用以下接口读写知识库文档（本地地址 http://127.0.0.1:8765）。
+
+## 常用接口
+
+- 文档清单：\`GET /api/wiki/docs\` → \`{docs: [{relPath, title, description, tags, category, repoSlug}]}\`
+- 仓库清单：\`GET /api/wiki/repos\` → \`{repos: [{category, slug, name}]}\`
+- 读取全文：\`GET /api/wiki/doc?path=<relPath>\` → \`{content}\`
+- 检索文档：\`GET /api/wiki/search?q=<关键词>\` → \`{results: [{relPath, title, description, tags}]}\`
+- 新建/上传文档：\`POST /api/wiki/write\`，JSON body 形如：
+  \`\`\`json
+  { "title": "文档标题", "description": "一句话简介", "tags": ["标签1", "标签2", "标签3"],
+    "category": "note", "repo": "default", "content": "正文 markdown" }
+  \`\`\`
+  （title/description 必填，tags 至少 3 个，category 限定 material/note/agent-doc/experience/archive，repo 为仓库 slug）
+- 编辑文档（可改标题/正文/移动仓库）：\`PUT /api/wiki/doc\`，body 含 \`path\`（原 relPath）+ 上述字段
+- 删除文档：\`DELETE /api/wiki/doc?path=<relPath>\`
+
+## 调用示例
+
+\`\`\`bash
+# 列文档
+curl -s "http://127.0.0.1:8765/api/wiki/docs"
+# 读全文
+curl -s "http://127.0.0.1:8765/api/wiki/doc?path=note/示例.md"
+# 检索
+curl -s "http://127.0.0.1:8765/api/wiki/search?q=DeepSeek"
+# 新建文档（归入 note/default 仓库）
+curl -s -X POST "http://127.0.0.1:8765/api/wiki/write" -H "Content-Type: application/json" -d '{
+  "title": "示例文档", "description": "示例", "tags": ["示例", "wiki", "说明"],
+  "category": "note", "repo": "default", "content": "# 正文"
+}'
+\`\`\`
+
+## 约定
+
+- 用户说「保存到资源仓库」= 通过 \`POST /api/wiki/write\` 创建带元数据的 markdown 文档（不要新建本地目录）。
+- 检索优先用 \`wiki_search.py --no-embed\`（若可用）；HTTP 检索接口 \`/api/wiki/search\` 作为通用备选。
+`;
+}
+
 // 读取 wiki 模式（默认 lite；文件损坏/缺失均回退 lite）
 function getWikiMode() {
   try {
@@ -2316,7 +2363,27 @@ function findArchiveSessionDir(groupName, taskId) {
     return sendJson(res, 200, { neighbors: [{ out, in: inE }] });
   }
   if (urlPath === '/api/wiki/inject-agent-docs' && req.method === 'POST') {
-    return sendJson(res, 200, { success: true });
+    // 诚实返回：真实遍历所有任务专属目录，幂等注入「llm-wiki 知识库调用说明」。
+    // 说明文档固定写入 <任务目录>/.workbuddy/llm-wiki-guide.md（dsh 内部状态目录，不污染对话产物/归档清单）；
+    // 已存在的任务目录跳过（幂等），失败项返回 failed 数组。前端契约：{written, skipped, total, failed}。
+    let written = 0;
+    let skipped = 0;
+    const total = db.tasks.length;
+    const failed = [];
+    for (const task of db.tasks) {
+      try {
+        if (!task || !task.dir) continue;
+        const dir = path.join(task.dir, '.workbuddy');
+        fs.mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, 'llm-wiki-guide.md');
+        if (fs.existsSync(file)) { skipped++; continue; }
+        fs.writeFileSync(file, LLM_WIKI_GUIDE_MD(), 'utf8');
+        written++;
+      } catch (e) {
+        failed.push({ id: task && task.id, error: e.message });
+      }
+    }
+    return sendJson(res, 200, { success: true, written, skipped, total, failed });
   }
 
   // 插件 Tab：从 dsh 首页引导数据（window.__DSH_BOOT__.entries）提取浏览器插件清单
