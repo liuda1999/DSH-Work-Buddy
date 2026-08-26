@@ -2325,6 +2325,28 @@ function findArchiveSessionDir(groupName, taskId) {
     writeWikiRepos(repos);
     return sendJson(res, 200, { ...repo, mode: getWikiMode() });
   }
+  if (urlPath === '/api/wiki/repos' && req.method === 'DELETE') {
+    // 删除仓库（用户手动移除）：内置「本地文档库」(default) 恒在不可删；
+    // 删除 data/wiki/<slug>/ 整目录（含该仓库全部文档）并从 repos.json 移除；同步清理该仓库图谱缓存。
+    const slug = String(params.slug || '').trim();
+    if (!slug) return sendJson(res, 400, { error: { message: '缺少仓库 slug' } });
+    if (slug === 'default') return sendJson(res, 400, { error: { code: 'builtin-repo-protected', message: '内置仓库「本地文档库」不可删除' } });
+    const repos = readWikiRepos();
+    const repo = repos.find((r) => r.slug === slug);
+    if (!repo) return sendJson(res, 404, { error: { code: 'repo-not-found', message: '仓库不存在：' + slug } });
+    const removedDocs = listWikiDocs().filter((d) => d.repoSlug === slug).length;
+    try {
+      // lite 模式：仓库文档落 data/wiki/<slug>/；llm-wiki 模式 sources/ 归默认仓库（该模式下此处目录通常不存在，忽略即可）
+      const repoDir = path.join(WIKI_STORE_DIR, slug);
+      if (fs.existsSync(repoDir)) fs.rmSync(repoDir, { recursive: true, force: true });
+      writeWikiRepos(repos.filter((r) => r.slug !== slug));
+      // 清理该仓库的知识图谱缓存（按 (category, repo) 隔离，避免残留节点）
+      wikiGraphCache.delete(repo.category + '/' + slug);
+      return sendJson(res, 200, { success: true, slug, removedDocs });
+    } catch (e) {
+      return sendJson(res, 500, { error: { message: '删除仓库失败：' + e.message } });
+    }
+  }
   if (urlPath === '/api/wiki/search' && req.method === 'GET') {
     const q = String(params.q || '').trim().toLowerCase();
     if (!q) return sendJson(res, 200, { results: [] });

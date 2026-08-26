@@ -10059,6 +10059,7 @@ function renderRsWikiPane() {
         <span class="rs-repo-name">📂 ${esc(repoName)}</span>
         <span class="rs-repo-count">${docs.length} 篇</span>
         <span class="rs-repo-arrow">▾</span>
+        ${repoSlug !== 'default' ? `<button class="tbtn rs-repo-del" data-repo-del="${esc(repoSlug)}" data-repo-name="${esc(repoName)}" title="删除该仓库及其全部文档（内置「本地文档库」不可删）">删除</button>` : ''}
       </div>
       <div class="rs-doc-rows">
         ${docs.length ? docs.map(docRow).join('')
@@ -10131,6 +10132,14 @@ document.getElementById('rsPaneWiki').addEventListener('click', async e => {
     renderRsWikiPane();
     return;
   }
+  // 删除仓库（按钮位于仓库头部；须先于 data-repo-toggle 分支判断，避免触发折叠）
+  const repoDel = e.target.closest('[data-repo-del]');
+  if (repoDel) {
+    e.stopPropagation();
+    const slug = repoDel.dataset.repoDel;
+    const name = repoDel.dataset.repoName || slug;
+    return deleteRsRepo(slug, name);
+  }
   const rt = e.target.closest('[data-repo-toggle]');
   if (rt) {
     const key = rt.dataset.repoToggle;
@@ -10182,6 +10191,23 @@ async function deleteRsDoc(doc) {
     renderRsPane();
   } catch (e) {
     toast('删除失败：' + e.message);
+  }
+}
+
+// 删除仓库（仅用户可删；二次确认并提示将删除其中全部文档；内置「本地文档库」不可删）
+async function deleteRsRepo(slug, name) {
+  const docsInRepo = (RS.docs || []).filter(d => d.repoSlug === slug);
+  const n = docsInRepo.length;
+  if (!window.confirm(`确定删除仓库「${name}」？\n将同时删除该仓库内 ${n} 篇文档，删除后不可恢复。`)) return;
+  try {
+    const data = await fetchJson('/api/wiki/repos?slug=' + encodeURIComponent(slug), { method: 'DELETE', body: '{}' });
+    const removed = typeof data.removedDocs === 'number' ? data.removedDocs : n;
+    toast(`仓库「${name}」已删除（含 ${removed} 篇文档）`);
+    _rsGraphLoaded = false; // 重置图谱缓存，删除仓库后需重新加载
+    await loadRsDocs();
+    renderRsWikiPane();
+  } catch (e) {
+    toast('删除仓库失败：' + e.message);
   }
 }
 

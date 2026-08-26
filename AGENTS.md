@@ -147,6 +147,8 @@ start.bat        # Windows：依赖/构建（首次较慢，幂等）→ 端口�
 | `_test_probe_detail_panel.mjs` | 智能详情面板字段修复（label 持久化/fileCount/openedAt/轮数链路，7/7） |
 | `_test_probe_wiki_graph_isolate.mjs` | Wiki 知识图谱仓库隔离（节点无交集、无跨仓库边，5/5） |
 | `_test_probe_wiki_repo.mjs` / `_test_probe_wiki_pane.mjs` / `_test_probe_wiki_empty_repo.mjs` | WIKI 建仓/归仓/编辑移动/空仓库卡片探针 |
+| `_test_probe_wiki_repo_delete.mjs` | WIKI 仓库删除 + 仓库间隔离（文档/目录/图谱隔离，默认仓库保护，15/15） |
+| `_test_probe_wiki_repo_del_ui.mjs` | 仓库删除按钮渲染 + deleteRsRepo 契约（vm，6/6） |
 | `_test_probe_modality_custom.mjs` | 自定义 Provider 模态声明（真实写入→查询→清理） |
 | `_test_probe_agent_bind/ui/fallback.mjs` | 智能体身份持久化链路 + 关闭重开渲染 + 兜底同步 |
 | `_test_probe_archive_group.mjs` | 归档组修复（按 name/id 落盘到指定组，非默认组） |
