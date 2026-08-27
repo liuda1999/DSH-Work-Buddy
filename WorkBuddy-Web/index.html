@@ -6664,7 +6664,27 @@ async function chatLoadPresets() {
   if (CHAT.openToken !== token) return;
   CHAT.presets = (listRes && listRes.presets) || [];
   const it = ((sessRes && sessRes.items) || []).find(i => i && i.sessionId === CHAT.sessionId);
-  CHAT.preset = (it && it.agentPreset) || 'standard';
+  let preset = (it && it.agentPreset) || 'standard';
+  // 空白会话重启后的模式恢复：harness 对空白会话的 agentPreset.select 会触发 recompose 清空事件日志，
+  // 若无对话则不落盘，重启后 session.list 回落 header 创建事实（standard）。
+  // 快照（task.sessionSnapshot.preset）记录了用户的选择，此处与当前显示不一致时尝试重新应用：
+  // 仍为空白会话 → select 成功恢复；已有对话（日志已落盘）→ select 报 locked，保持服务端返回值。
+  const tsk = CHAT.task;
+  let snapPreset = null;
+  if (tsk && tsk.sessionSnapshot) {
+    try {
+      const o = JSON.parse(tsk.sessionSnapshot);
+      snapPreset = (o && typeof o.preset === 'string' && o.preset) || null;
+    } catch (e) { snapPreset = null; }
+  }
+  if (snapPreset && snapPreset !== preset) {
+    try {
+      await wbRpc('agentPreset.select', { sessionId: CHAT.sessionId, agentPreset: snapPreset });
+      if (CHAT.openToken !== token) return;
+      preset = snapPreset;
+    } catch (e) { /* 非空白会话锁定/模式不可用：保持服务端返回值 */ }
+  }
+  CHAT.preset = preset;
   renderSscChips();
 }
 
@@ -6697,6 +6717,23 @@ async function sscSelectPreset(id) {
     renderSscChips();
     document.getElementById('sscPop').hidden = true;
     toast('工作模式已切换为 ' + chatPresetName(id));
+    // 模式选择持久化到任务快照：空白会话的选择不落盘 harness 事件日志，重启会回落 header 默认值；
+    // 快照补记 preset，重开弹窗时 chatLoadPresets 据此恢复（仅空白会话可重新 select）。
+    const tsk = CHAT.task;
+    if (tsk && tsk.id && tsk.sessionSnapshot) {
+      try {
+        const snapObj = JSON.parse(tsk.sessionSnapshot);
+        if (snapObj && snapObj.sessionId) {
+          snapObj.preset = id;
+          const snapStr = JSON.stringify(snapObj);
+          tsk.sessionSnapshot = snapStr; // 本地同步，避免重开弹窗读到旧快照
+          fetchJson('/api/tasks/' + encodeURIComponent(tsk.id), {
+            method: 'PATCH',
+            body: JSON.stringify({ action: 'bindSession', snapshot: snapStr, sessionId: snapObj.sessionId })
+          }).catch(() => {});
+        }
+      } catch (e) { /* 快照非 JSON：跳过持久化，不影响模式切换 */ }
+    }
   } catch (e) {
     const msg = String((e && e.message) || '');
     if (msg.includes('agent-preset-locked')) {
@@ -9191,7 +9228,7 @@ function renderSettingsCustom() {
         <span class="ci-dot ${keyOn ? 'on' : 'off'}"></span>
         <div class="ci-main">
           <div class="ci-title">${esc(p.displayName || c.route)}</div>
-          <div class="ci-meta">${esc(c.route)} · ${esc(p.api || 'openai-completions')} · ${esc(p.baseURL || '—')} · ${((p.models || []).length || 0)} 模型</div>
+          <div class="ci-meta">${esc(c.route)} · ${esc(p.protocol || p.api || 'openai-completions')} · ${esc(p.baseURL || '—')} · ${((p.models || []).length || 0)} 模型</div>
         </div>
         <span class="ci-status">${keyOn ? '密钥已配置' : '密钥未配置'}</span>
         <button class="ci-del" data-route="${esc(c.route)}" data-custom-edit="1">编辑</button>
@@ -9208,7 +9245,8 @@ function editCustomProvider(route) {
   document.getElementById('scCustomRoute').value = c.route;
   document.getElementById('scCustomName').value = p.displayName || '';
   document.getElementById('scCustomBaseURL').value = p.baseURL || '';
-  document.getElementById('scCustomApi').value = p.api || 'openai-completions';
+  // 方向 E：回显用户原始协议选择（protocol），而非运行期可能被降级的 api
+  document.getElementById('scCustomApi').value = p.protocol || p.api || 'openai-completions';
   document.getElementById('scCustomModels').value = ((p.models || []).map((m) => m.id)).join(', ');
   document.getElementById('scCustomVision').checked = Array.isArray(p.defaultInput) && p.defaultInput.includes('image');
   document.getElementById('scCustomKey').value = '';
@@ -9266,8 +9304,11 @@ async function discoverCustomModels() {
 
 // 构建自定义 Provider profile（纯函数）：协议已由调用方解析（auto→探测→responses/completions）
 // + 空密钥本地端点兜底：不声明 apiKeyEnv（避免 harness resolveApiKey 抛 MISSING_CREDENTIAL），注入占位 Authorization 头
-function buildCustomProviderProfile({ route, displayName, baseURL, api, key, models, vision, keepExistingKey }) {
+// 方向 E：protocol 记录用户原始协议选择（含 auto，用于设置中心显示/回显），与生效协议 api 解耦；
+//   运行期降级只改 api，protocol 保持用户选择不变，网关启动时按 protocol 校准 api。
+function buildCustomProviderProfile({ route, displayName, baseURL, api, key, models, vision, keepExistingKey, protocol }) {
   const profile = { displayName, baseURL, api };
+  if (protocol) profile.protocol = protocol; // 用户原始选择（auto / responses / completions / anthropic），持久化
   if (Array.isArray(models) && models.length) profile.models = models;
   // 多模态声明：勾选则声明 provider 级默认输入模态（自定义端点无目录条目，网关据此判定支持图片输入）
   profile.defaultInput = vision ? ['text', 'image'] : ['text'];
@@ -9319,6 +9360,7 @@ async function saveCustomProvider() {
 
     const profile = buildCustomProviderProfile({
       route, displayName, baseURL, api: resolvedApi, key, models, keepExistingKey,
+      protocol: api, // 方向 E：持久化用户原始协议选择（含 auto），设置中心回显用
       vision: document.getElementById('scCustomVision').checked,
     });
     const res = await wbRpc('settings.mutate', { ns: 'llm-pi-ai', ops: [{ op: 'set', path: ['providers', route], value: profile }], expectedRevision: SSC.piAi.revision });

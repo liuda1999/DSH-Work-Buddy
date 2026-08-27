@@ -2,7 +2,7 @@
 
 DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集成了任务管理控制台（WorkBuddy-Web）、DeepSeek Harness 智能体组件和 LLM Wiki 文档组件。
 
-- **版本**：`0.1.98`
+- **版本**：`0.1.99`
 - **项目标识**：见根目录 [`VERSION`](./VERSION)
 
 ---
@@ -10,7 +10,7 @@ DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集�
 ## 目录结构
 
 ```
-DSH-WorkBuddy-0.1.98/
+DSH-WorkBuddy-0.1.99/
 ├── VERSION                 # 项目顶层版本号
 ├── README.md               # 本文件
 ├── start.bat               # 一键启动脚本（Windows，Web + 智能体）
@@ -31,7 +31,7 @@ DSH-WorkBuddy-0.1.98/
 
 - **入口文件**：`WorkBuddy-Web/index.html`
 - **一体化服务**：`WorkBuddy-Web/server.js`（固定端口 `0.0.0.0:8765`）
-- **版本**：`0.1.98`
+- **版本**：`0.1.99`
 
 ### 2. deepseek-harness
 
@@ -137,7 +137,7 @@ pnpm docs:preview
 本项目分发包为根目录下的：
 
 ```
-DSH-WorkBuddy-0.1.98.zip
+DSH-WorkBuddy-0.1.99.zip
 ```
 
 该压缩包已排除以下内容：
@@ -155,9 +155,17 @@ DSH-WorkBuddy-0.1.98.zip
 
 ## 版本策略
 
-- 整个 DSH Work Buddy 项目对外版本为 `0.1.98`（见 `VERSION`）。
-- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.98`。
+- 整个 DSH Work Buddy 项目对外版本为 `0.1.99`（见 `VERSION`）。
+- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.99`。
 - `deepseek-harness`、`llm-wiki` 等组件保留其自身原有版本，不强制统一。
+
+### v0.1.99 更新要点
+
+- **协议选择与生效解耦（方向 E）**：设置中心自定义 Provider 新增 `protocol` 字段持久化用户原始协议选择（auto / responses / completions / anthropic），与生效协议 `api` 字段解耦；运行期协议降级只改 `api`，设置中心列表与编辑表单始终回显用户原始选择，互不影响。
+- **API 路由降级仅限通用兼容模式会话**：运行期协议兜底（首次对话遇 404 路由不存在 / 405 / 501 自动降级 Completions 重试）增加会话模式判定，仅当前选择了「通用兼容模式」（agentPreset=universal）的会话触发，非通用模式会话即使协议错误也不降级、不重试。
+- **启动协议校准**：网关启动时按 `protocol` 字段校准 `api`，恢复「运行期降级后未优雅关闭」残留的降级状态，杜绝降级意外持久化；校准分两阶段等待智能体端口与设置命名空间就绪，规避启动竞态。
+- **会话工作模式重启稳定**：对话窗口的工作模式切换持久化到任务快照（`task.sessionSnapshot.preset`），项目重启后空白会话的模式自动恢复，非空白会话经 harness 事件日志恢复，模式显示不自动变、不异常。
+- **实证测试**：`_test_probe_protocol_fallback.mjs` 53 项（含非通用模式不降级）、`_test_probe_protocol_calibrate.mjs` 4 项（启动校准）、`_test_probe_protocol_fallback_persist.mjs` 2 项（降级不持久化 + protocol 保持）、`_test_probe_mode_persist.mjs` 4 项（模式重启稳定）全部通过；启动质检 17/17、模态声明探针 3/3 无回归。
 
 ### v0.1.98 更新要点
 

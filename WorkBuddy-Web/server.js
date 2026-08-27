@@ -1389,7 +1389,7 @@ function harnessRpc(method, payload = {}, rpcId) {
   });
 }
 
-// ---------- 运行期协议兜底（方案 A）：首次对话遇协议相关 4xx → 临时降级 Completions 重试一次 ----------
+// ---------- 运行期协议兜底（方案 A + 方向 E）：首次对话遇协议相关 4xx → 临时降级 Completions 重试一次 ----------
 // 背景：通用兼容模式在「配置期」用 probeResponsesSupport 预判端点是否支持 Responses API，
 // 但配置期判定可能在真实对话时失准（端点行为变化/探测盲区）。本机制在运行期兜底：
 //   首次对话 turn/end 出现协议相关错误（404 路由不存在 / 405 / 501）时，
@@ -1398,6 +1398,10 @@ function harnessRpc(method, payload = {}, rpcId) {
 //   触发：404 且错误体不含模型信号（裸 Not Found=路由不存在）、405、501
 //   不触发：401/403/429/5xx（网络/鉴权/排队/维护）、400/422（载荷/未知参数）、
 //           404 model-not-found（路由存在仅模型未知，降级无意义）、超时、连接失败
+// 范围限定（方向 E 补充）：仅「当前选择了通用兼容模式（agentPreset=universal）」的会话触发；
+//   非通用兼容模式会话不降级，与设置中心层互不影响。
+// 选择与生效解耦（方向 E）：设置中心用户原始协议选择持久化在 profile.protocol 字段，
+//   运行期降级仅修改生效字段 profile.api；网关启动时按 protocol 校准 api（见 calibrateProtocolApi）。
 // 不持久化：降级仅存于网关内存态（protoOverrides），优雅关闭时统一恢复原协议，网关不落盘任何降级记录。
 const protoOverrides = new Map();   // route → { originalApi }（运行期确证 Responses 不可用，改用 Completions）
 const fallbackWatchers = new Map(); // sessionId → watcher（观察首次对话 turn 结果）
@@ -1427,6 +1431,16 @@ async function sessionCurrentRoute(sessionId) {
     const m = await harnessRpc('session.models', { sessionId });
     const cur = m && m.current;
     return (cur && cur.provider) || null;
+  } catch (e) { return null; }
+}
+
+// 获取会话当前工作模式（session.list 的 agentPreset；失败返回 null）
+// 用于「API 路由降级仅适用通用兼容模式会话」的判定：非 universal 会话不触发运行期降级。
+async function sessionPresetId(sessionId) {
+  try {
+    const sl = await harnessRpc('session.list', {});
+    const it = (Array.isArray(sl && sl.items) ? sl.items : []).find((i) => i && i.sessionId === sessionId);
+    return (it && it.agentPreset) || null;
   } catch (e) { return null; }
 }
 
@@ -1497,8 +1511,10 @@ async function pollSessionFallback(w) {
   if (w.retried || reason.kind !== 'error') { clearSessionFallback(w); return; } // 重试已完成 / 本轮正常结束
   const msg = (reason.error && (reason.error.message || reason.error.code)) || '';
   if (!isProtocolFallbackError(msg)) { clearSessionFallback(w); return; } // 非协议错误（网络/排队/维护/参数）→ 不触发降级
-  // 触发降级：确认路由 → 临时切换 Completions → 原样重发 prompt 一次
+  // 触发降级：仅通用兼容模式会话 → 确认路由 → 临时切换 Completions → 原样重发 prompt 一次
   try {
+    const preset = await sessionPresetId(w.sessionId);
+    if (preset !== 'universal') { clearSessionFallback(w); return; } // 非通用兼容模式会话不触发 API 路由降级（与设置中心层互不影响）
     const route = await sessionCurrentRoute(w.sessionId);
     if (!route || !(await downgradeRouteToCompletions(route))) { clearSessionFallback(w); return; }
     w.retried = true;
@@ -1524,6 +1540,61 @@ async function restoreProtoOverrides() {
     } catch (e) { /* 尽力而为 */ }
   }
   protoOverrides.clear();
+}
+
+// 方向 E 启动校准：设置中心协议选择（protocol 字段）与生效协议（api 字段）解耦后，
+// 网关启动时按用户原始选择校准 api——恢复「运行期降级后未优雅关闭」残留的 api 值，
+// 确保设置中心显示与运行期降级互不影响。仅处理带 protocol 字段的自定义 Provider：
+//   protocol 为具体协议（responses/completions/anthropic）→ 将 api 校准为该值；
+//   protocol=auto / 无 protocol（旧 Provider/目录供应商）→ 以现有 api 为准，不改动。
+// 尽力而为：任一失败不阻塞启动；每次 mutate 前重读 revision，避免多路由连续校准版本失配。
+async function calibrateProtocolApi() {
+  const CONCRETE = new Set(['openai-responses', 'openai-completions', 'anthropic-messages']);
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  // spawnHarness() 为异步轮询（非阻塞），ensureHarness resolve 时智能体未必已监听；
+  // 且 harness 的设置命名空间由 settings-file 异步加载：RPC 端口就绪 ≠ 设置已就绪。
+  // 故分两阶段等待：先等端口可连（最多 30s），再等 llm-pi-ai 命名空间出现（最多 10s），避免启动竞态导致校准空转。
+  const CALIBRATE_PORT_ATTEMPTS = 30;
+  const CALIBRATE_SETTLE_ATTEMPTS = 10;
+  let portUp = false;
+  for (let i = 0; i < CALIBRATE_PORT_ATTEMPTS; i++) {
+    if (await probeHarness()) { portUp = true; break; }
+    await wait(1000);
+  }
+  if (!portUp) { console.log('[DSH Work Buddy] 启动协议校准放弃：智能体端口未就绪'); return; }
+  let piNs = null;
+  for (let i = 0; i < CALIBRATE_SETTLE_ATTEMPTS; i++) {
+    try {
+      const d = await harnessRpc('settings.describe', {});
+      piNs = (d.namespaces || []).find((n) => n.ns === 'llm-pi-ai');
+    } catch (e) { piNs = null; }
+    if (piNs && piNs.value && typeof piNs.value.providers === 'object') break;
+    await wait(1000);
+  }
+  if (!piNs || !piNs.value || typeof piNs.value.providers !== 'object') { console.log('[DSH Work Buddy] 启动协议校准放弃：llm-pi-ai 命名空间未就绪'); return; }
+  let fixed = 0;
+  try {
+    const provs = piNs.value.providers;
+    for (const [route, profile] of Object.entries(provs)) {
+      if (!profile || typeof profile !== 'object') continue;
+      const proto = String(profile.protocol || '');
+      if (!CONCRETE.has(proto)) continue; // 无 protocol / auto → 保持现有 api
+      const api = String(profile.api || '');
+      if (api === proto) continue;
+      const cur = await harnessRpc('settings.describe', {});
+      const ns = (cur.namespaces || []).find((n) => n.ns === 'llm-pi-ai');
+      const live = (ns && ns.value && ns.value.providers && ns.value.providers[route]) || null;
+      if (!live || String(live.api || '') === proto) continue;
+      await harnessRpc('settings.mutate', {
+        ns: 'llm-pi-ai',
+        ops: [{ op: 'set', path: ['providers', route, 'api'], value: proto }],
+        expectedRevision: ns && ns.revision
+      });
+      fixed++;
+      console.log(`[DSH Work Buddy] 已按设置中心协议选择校准 ${route}：api ${api || '(空)'} → ${proto}`);
+    }
+    if (fixed) console.log(`[DSH Work Buddy] 启动协议校准完成，共 ${fixed} 个 Provider 恢复用户协议选择`);
+  } catch (e) { /* 尽力而为：启动校准失败不阻塞服务 */ }
 }
 
 // user/message 事件首文本块（容忍 content 为文本块数组 / 纯字符串 / message.content 三种形态）
@@ -2893,7 +2964,9 @@ server.listen(PORT, HOST, () => {
   if (HOST === '0.0.0.0' || HOST === '::') {
     console.log(`  提示：已允许同局域网跨设备访问；同网段设备可用上方 IPv4 地址访问，首次访问需放行 Windows 防火墙 8765 端口入站。`);
   }
-  ensureHarness(); // 智能体组件：探测 → 未运行则自动拉起（127.0.0.1:3080）
+  ensureHarness() // 智能体组件：探测 → 未运行则自动拉起（127.0.0.1:3080）
+    .then(() => calibrateProtocolApi()) // 方向 E：就绪后按设置中心协议选择校准生效协议（恢复残留降级）
+    .catch(() => {});
   ensureWiki();    // Wiki 文档库：构建产物就位检查（/llm-wiki-plugin/）
   ensureSkills();  // dsh 技能：llm-wiki 项目技能安装到 .dsh/skills/（幂等）
   ensureUniversalPreset(); // 通用兼容模式 preset：安装到 harness 用户 preset 根（幂等）

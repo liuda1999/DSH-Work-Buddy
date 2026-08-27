@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul
 setlocal EnableDelayedExpansion
 
@@ -7,7 +7,7 @@ set "HARNESS=%ROOT%deepseek-harness\deepseek-harness-master"
 set "WIKI=%ROOT%llm-wiki\project"
 
 echo ==========================================
-echo   DSH Work Buddy 一键启动  (v0.1.98)
+echo   DSH Work Buddy 一键启动  (v0.1.99)
 echo   默认端口: 8765（支持同局域网跨设备访问）
 echo ==========================================
 echo.
