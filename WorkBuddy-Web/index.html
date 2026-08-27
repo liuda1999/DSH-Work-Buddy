@@ -5784,12 +5784,30 @@ function chatOnEvent(ev, view) {
   }
 }
 
+// 运行期协议兜底错误判定（与网关 isProtocolFallbackError 同一口径）：仅「404 裸路由 / 405 / 501」触发降级
+function isProtocolFallbackErr(msg) {
+  const m = String(msg || '');
+  const st = m.match(/\((\d{3})\)/);
+  if (!st) return false;
+  const status = Number(st[1]);
+  if (status === 405 || status === 501) return true;
+  if (status === 404) {
+    const idx = m.indexOf('):');
+    const raw = idx >= 0 ? m.slice(idx + 2) : m;
+    const modelish = /\bmodel\b|model_not_found|does not exist|no such|unknown model/i.test(raw);
+    return !modelish; // 裸 404（路由不存在）→ 触发；404 model-not-found（路由存在）→ 不触发
+  }
+  return false;
+}
+
 function chatEvUserMessage(d) {
   const src = d.source || {};
   const blocks = d.content || [];
   const texts = blocks.filter(b => b && b.type === 'text').map(b => b.text || '');
   // 注入的 runtime context：过滤不渲染
   if (texts.length && texts[0].startsWith('Current runtime context')) return;
+  // 网关协议兜底自动重试回显去重：wb-fb- 前缀 rpcId 是网关对同一用户消息的降级重发，原气泡已存在，不再渲染
+  if (src.rpcId && src.rpcId.startsWith('wb-fb-')) return;
   // 乐观回执对齐：信封 rpcId 命中 → 去除 pending 态，不重复渲染
   if (src.rpcId && CHAT.pendingRpcIds.has(src.rpcId)) {
     const el = CHAT.pendingRpcIds.get(src.rpcId);
@@ -5967,7 +5985,12 @@ function chatEvTurnEnd(d) {
   chatFinalizeStream();
   const r = d.reason || {};
   if (r.kind === 'error') {
-    chatAppend(chatNoteEl(`本回合失败：${esc((r.error && r.error.message) || '未知错误')}`, true));
+    const msg = (r.error && (r.error.message || r.error.code)) || '';
+    if (isProtocolFallbackErr(msg)) {
+      chatAppend(chatNoteEl('当前协议暂不可用，系统正在自动切换为兼容协议并重试…', false));
+    } else {
+      chatAppend(chatNoteEl(`本回合失败：${esc(msg) || '未知错误'}`, true));
+    }
   } else if (r.kind === 'aborted') {
     chatAppend(chatNoteEl('已停止生成', false));
   } else if (r.kind === 'blocked') {

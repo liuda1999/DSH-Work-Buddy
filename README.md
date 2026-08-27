@@ -2,7 +2,7 @@
 
 DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集成了任务管理控制台（WorkBuddy-Web）、DeepSeek Harness 智能体组件和 LLM Wiki 文档组件。
 
-- **版本**：`0.1.97`
+- **版本**：`0.1.98`
 - **项目标识**：见根目录 [`VERSION`](./VERSION)
 
 ---
@@ -10,7 +10,7 @@ DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集�
 ## 目录结构
 
 ```
-DSH-WorkBuddy-0.1.97/
+DSH-WorkBuddy-0.1.98/
 ├── VERSION                 # 项目顶层版本号
 ├── README.md               # 本文件
 ├── start.bat               # 一键启动脚本（Windows，Web + 智能体）
@@ -31,7 +31,7 @@ DSH-WorkBuddy-0.1.97/
 
 - **入口文件**：`WorkBuddy-Web/index.html`
 - **一体化服务**：`WorkBuddy-Web/server.js`（固定端口 `0.0.0.0:8765`）
-- **版本**：`0.1.97`
+- **版本**：`0.1.98`
 
 ### 2. deepseek-harness
 
@@ -137,7 +137,7 @@ pnpm docs:preview
 本项目分发包为根目录下的：
 
 ```
-DSH-WorkBuddy-0.1.97.zip
+DSH-WorkBuddy-0.1.98.zip
 ```
 
 该压缩包已排除以下内容：
@@ -155,9 +155,15 @@ DSH-WorkBuddy-0.1.97.zip
 
 ## 版本策略
 
-- 整个 DSH Work Buddy 项目对外版本为 `0.1.97`（见 `VERSION`）。
-- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.97`。
+- 整个 DSH Work Buddy 项目对外版本为 `0.1.98`（见 `VERSION`）。
+- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.98`。
 - `deepseek-harness`、`llm-wiki` 等组件保留其自身原有版本，不强制统一。
+
+### v0.1.98 更新要点
+
+- **运行期协议兜底（首次对话遇协议 4xx 自动降级重试）**：网关在首次对话时发现远端端点不支持 OpenAI Responses 协议（404 路由不存在 / 405 / 501）时，自动将对应 provider 临时降级为 `openai-completions` 并重试一次，避免首次对话直接报错；降级状态仅存于网关内存（不持久化），优雅关闭时自动恢复原协议配置。错误判定矩阵排除网络/鉴权类错误（401/403/429/5xx/超时/连接失败）与 404 模型不存在，避免误降级。
+- **多种少见场景实测通过**：`_test_probe_protocol_fallback.mjs` 覆盖 404 路由不存在 / 405 / 501（触发降级 + wb-fb- 重试 + 最终成功）与 429 限流 / 503 维护 / 400 参数 / 404 模型不存在 / 网络不可达（不降级不重试）共 8 场景；`_test_probe_protocol_fallback_persist.mjs` 验证降级不持久化（优雅关闭后协议自动恢复）。
+- **前端协议错误提示软化与去重**：对话窗口对协议兜底重试消息（`wb-fb-` 前缀 rpcId）去重不重复渲染；协议类错误提示软化，避免误导用户。
 
 ### v0.1.97 更新要点
 

@@ -450,15 +450,20 @@ function shutdown(reason, code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[DSH Work Buddy] 正在关闭：${reason}`);
-  // 1) 主动销毁所有 WS 升级连接，避免 server.close() 等长连接卡住
-  for (const s of upgradeSockets) { try { s.destroy(); } catch (e) { /* 忽略 */ } }
-  upgradeSockets.clear();
-  // 2) 停止接受新连接（http server 关）→ 现有连接自然结束后立即退出；未 listen 场景由 3s 兜底兜住
-  try { server.close(() => process.exit(code)); } catch (e) { /* 忽略 */ }
-  // 3) 关闭智能体子进程（组件同关）
-  shutdownHarness();
-  // 4) 兜底强制退出：3s 后无论 close 回调是否触发都退出
-  setTimeout(() => process.exit(code), 3000).unref();
+  // 0) 运行期协议兜底：恢复临时降级的协议（不持久化降级结果；1.5s 内尽力完成，失败不阻塞退出）
+  Promise.race([restoreProtoOverrides(), new Promise((r) => setTimeout(r, 1500))])
+    .catch(() => {})
+    .then(() => {
+      // 1) 主动销毁所有 WS 升级连接，避免 server.close() 等长连接卡住
+      for (const s of upgradeSockets) { try { s.destroy(); } catch (e) { /* 忽略 */ } }
+      upgradeSockets.clear();
+      // 2) 停止接受新连接（http server 关）→ 现有连接自然结束后立即退出；未 listen 场景由 3s 兜底兜住
+      try { server.close(() => process.exit(code)); } catch (e) { /* 忽略 */ }
+      // 3) 关闭智能体子进程（组件同关）
+      shutdownHarness();
+      // 4) 兜底强制退出：3s 后无论 close 回调是否触发都退出
+      setTimeout(() => process.exit(code), 3000).unref();
+    });
 }
 
 // ---------- 代理转发（HTTP + WebSocket） ----------
@@ -1360,10 +1365,11 @@ function sendJson(res, code, data) {
   res.end(JSON.stringify(data));
 }
 
-// 内部调用 dsh 智能体 RPC（envelope 格式）
-function harnessRpc(method, payload = {}) {
+// 内部调用 dsh 智能体 RPC（envelope 格式）；rpcId 可显式指定（运行期协议兜底重试用 wb-fb- 前缀，供前端去重识别）
+function harnessRpc(method, payload = {}, rpcId) {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ type: 'client-request', rpcId: 'wb-srv-' + Math.random().toString(36).slice(2), method, payload });
+    const id = rpcId || 'wb-srv-' + Math.random().toString(36).slice(2);
+    const body = JSON.stringify({ type: 'client-request', rpcId: id, method, payload });
     const req = http.request({
       host: HARNESS_HOST, port: HARNESS_PORT, path: '/api/' + method, method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
@@ -1381,6 +1387,143 @@ function harnessRpc(method, payload = {}) {
     req.on('error', (e) => { reviveHarness(); reject(e); });
     req.end(body);
   });
+}
+
+// ---------- 运行期协议兜底（方案 A）：首次对话遇协议相关 4xx → 临时降级 Completions 重试一次 ----------
+// 背景：通用兼容模式在「配置期」用 probeResponsesSupport 预判端点是否支持 Responses API，
+// 但配置期判定可能在真实对话时失准（端点行为变化/探测盲区）。本机制在运行期兜底：
+//   首次对话 turn/end 出现协议相关错误（404 路由不存在 / 405 / 501）时，
+//   将对应 provider 路由临时降级为 openai-completions 并原样重发一次 prompt。
+// 判定矩阵（仅以下触发降级，其余一律不触发）：
+//   触发：404 且错误体不含模型信号（裸 Not Found=路由不存在）、405、501
+//   不触发：401/403/429/5xx（网络/鉴权/排队/维护）、400/422（载荷/未知参数）、
+//           404 model-not-found（路由存在仅模型未知，降级无意义）、超时、连接失败
+// 不持久化：降级仅存于网关内存态（protoOverrides），优雅关闭时统一恢复原协议，网关不落盘任何降级记录。
+const protoOverrides = new Map();   // route → { originalApi }（运行期确证 Responses 不可用，改用 Completions）
+const fallbackWatchers = new Map(); // sessionId → watcher（观察首次对话 turn 结果）
+const FALLBACK_POLL_MS = 2000;
+const FALLBACK_DEADLINE_MS = 120000;
+const FALLBACK_RETRY_PREFIX = 'wb-fb-'; // 网关重试 session.prompt 的 rpcId 前缀（前端据此去重重试回显的用户气泡）
+
+// 判定错误消息是否为「协议不支持」信号（与 probeResponsesSupport / 前端 isProtocolFallbackErr 保持同一套口径）
+function isProtocolFallbackError(msg) {
+  const m = String(msg || '');
+  const st = m.match(/\((\d{3})\)/);
+  if (!st) return false;
+  const status = Number(st[1]);
+  if (status === 405 || status === 501) return true;
+  if (status === 404) {
+    const idx = m.indexOf('):');
+    const raw = idx >= 0 ? m.slice(idx + 2) : m;
+    const modelish = /\bmodel\b|model_not_found|does not exist|no such|unknown model/i.test(raw);
+    return !modelish; // 裸 404（路由不存在）→ 触发；404 model-not-found（路由存在）→ 不触发
+  }
+  return false;
+}
+
+// 获取会话当前 provider 路由（session.models 的 current.provider）
+async function sessionCurrentRoute(sessionId) {
+  try {
+    const m = await harnessRpc('session.models', { sessionId });
+    const cur = m && m.current;
+    return (cur && cur.provider) || null;
+  } catch (e) { return null; }
+}
+
+// 将 route 临时降级为 openai-completions（仅对 api=openai-responses 的路由生效；已降级则跳过）
+// 返回是否成功切换。切换后记录到 protoOverrides（内存态），优雅关闭统一恢复。
+// 注意：不得仅凭 protoOverrides.has(route) 短路——同生命周期内路由可能被重新保存回 responses，
+// 故每次先核对当前 profile 的 api 字段再决定是否需要再次 mutate。
+async function downgradeRouteToCompletions(route) {
+  try {
+    const d = await harnessRpc('settings.describe', {});
+    const piNs = (d.namespaces || []).find((n) => n.ns === 'llm-pi-ai');
+    const profile = (piNs && piNs.value && piNs.value.providers && piNs.value.providers[route]) || null;
+    if (!profile) return false;
+    const api = String(profile.api || '');
+    if (api === 'openai-completions') {
+      // 已在降级态：补记覆盖（应对「已降级后被重新保存为 responses 再触发」的恢复锚点）
+      if (!protoOverrides.has(route)) protoOverrides.set(route, { originalApi: 'openai-responses' });
+      return true;
+    }
+    if (api !== 'openai-responses') return false; // 仅降级 Responses 协议路由；Completions/官方适配器无备用协议可降
+    await harnessRpc('settings.mutate', {
+      ns: 'llm-pi-ai',
+      ops: [{ op: 'set', path: ['providers', route, 'api'], value: 'openai-completions' }],
+      expectedRevision: piNs.revision
+    });
+    if (!protoOverrides.has(route)) protoOverrides.set(route, { originalApi: api });
+    return true;
+  } catch (e) { return false; }
+}
+
+// 观察会话首次对话的 turn 结果：协议 4xx → 降级重试一次；成功/非协议错误 → 结束观察
+function watchSessionFallback(sessionId, payload) {
+  if (fallbackWatchers.has(sessionId)) return;
+  const w = {
+    sessionId, payload,
+    retried: false,      // 是否已降级重试（仅重试一次）
+    lastTurn: 0,         // 已处理的最大 turn 号
+    timer: null, deadline: null
+  };
+  w.timer = setInterval(() => pollSessionFallback(w).catch(() => {}), FALLBACK_POLL_MS);
+  if (w.timer.unref) w.timer.unref();
+  w.deadline = setTimeout(() => { clearInterval(w.timer); fallbackWatchers.delete(sessionId); }, FALLBACK_DEADLINE_MS);
+  if (w.deadline.unref) w.deadline.unref();
+  fallbackWatchers.set(sessionId, w);
+}
+
+function clearSessionFallback(w) {
+  clearInterval(w.timer);
+  if (w.deadline) clearTimeout(w.deadline);
+  fallbackWatchers.delete(w.sessionId);
+}
+
+async function pollSessionFallback(w) {
+  let h;
+  try { h = await harnessRpc('session.history', { sessionId: w.sessionId, maxMessages: 100 }); }
+  catch (e) { return; } // 智能体暂不可用：下轮再试
+  const entries = Array.isArray(h && h.events) ? h.events : [];
+  const ends = [];
+  for (const ent of entries) {
+    const ev = ent && ent.event ? ent.event : ent;
+    if (ev && ev.type === 'turn/end' && ev.data && typeof ev.data.turn === 'number') ends.push(ev);
+  }
+  if (!ends.length) return;
+  const latest = ends.sort((a, b) => b.data.turn - a.data.turn)[0];
+  if (latest.data.turn <= w.lastTurn) return; // 已处理过
+  w.lastTurn = latest.data.turn;
+  const reason = latest.data.reason || {};
+  if (w.retried || reason.kind !== 'error') { clearSessionFallback(w); return; } // 重试已完成 / 本轮正常结束
+  const msg = (reason.error && (reason.error.message || reason.error.code)) || '';
+  if (!isProtocolFallbackError(msg)) { clearSessionFallback(w); return; } // 非协议错误（网络/排队/维护/参数）→ 不触发降级
+  // 触发降级：确认路由 → 临时切换 Completions → 原样重发 prompt 一次
+  try {
+    const route = await sessionCurrentRoute(w.sessionId);
+    if (!route || !(await downgradeRouteToCompletions(route))) { clearSessionFallback(w); return; }
+    w.retried = true;
+    await harnessRpc('session.prompt', w.payload, FALLBACK_RETRY_PREFIX + Math.random().toString(36).slice(2));
+    console.log(`[DSH Work Buddy] 运行期协议兜底：${route} 首次对话协议错误(${msg.slice(0, 90)})，已临时降级 Completions 重试`);
+  } catch (e) { clearSessionFallback(w); }
+}
+
+// 优雅关闭时恢复全部临时降级（不持久化降级结果；1.5s 内尽力完成，失败不阻塞退出）
+// 仅恢复仍存在的路由：provider 已被删除（如测试清理）时不再重建，避免残留空壳 provider。
+async function restoreProtoOverrides() {
+  for (const [route, { originalApi }] of protoOverrides) {
+    try {
+      const d = await harnessRpc('settings.describe', {});
+      const piNs = (d.namespaces || []).find((n) => n.ns === 'llm-pi-ai');
+      const profile = (piNs && piNs.value && piNs.value.providers && piNs.value.providers[route]) || null;
+      if (!profile) continue; // 路由已不存在 → 无需恢复
+      await harnessRpc('settings.mutate', {
+        ns: 'llm-pi-ai',
+        ops: [{ op: 'set', path: ['providers', route, 'api'], value: originalApi }],
+        expectedRevision: piNs && piNs.revision
+      });
+    } catch (e) { /* 尽力而为 */ }
+  }
+  protoOverrides.clear();
 }
 
 // user/message 事件首文本块（容忍 content 为文本块数组 / 纯字符串 / message.content 三种形态）
@@ -2663,6 +2806,30 @@ const server = http.createServer(async (req, res) => {
   // Wiki 文档库（llm-wiki 构建产物静态托管；须在智能体代理前拦截，否则会被转发到 dsh SPA）
   if (urlPath === '/llm-wiki-plugin' || urlPath.startsWith('/llm-wiki-plugin/')) {
     return serveWiki(urlPath, res, req);
+  }
+
+  // 运行期协议兜底：拦截 session.prompt —— 读取 envelope（供失败重试原样重发），转发后观察首次对话结果
+  if (urlPath === '/api/session.prompt' && req.method === 'POST') {
+    const env = await readBody(req); // readBody 已 JSON.parse → env 即信封对象
+    const payload = (env && env.payload) || null;
+    const sid = payload && payload.sessionId;
+    const rawJson = JSON.stringify(env); // 原样重发需要字符串体
+    // 与 proxyHttp 一致：转发到智能体（服务端到服务端，不携带浏览器 Origin，dsh 连接围栏不受影响）
+    const preq = http.request({
+      host: HARNESS_HOST, port: HARNESS_PORT, path: '/api/session.prompt', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(rawJson) }
+    }, (pres) => {
+      res.writeHead(pres.statusCode, pres.headers);
+      pres.pipe(res);
+    });
+    preq.on('error', () => {
+      reviveHarness();
+      if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: { code: 'harness-offline', message: 'dsh 智能体服务未就绪' } }));
+    });
+    preq.end(rawJson);
+    if (sid && payload) watchSessionFallback(sid, payload); // 观察该会话首次对话（协议 4xx → 自动降级重试）
+    return;
   }
 
   // 转发到 dsh 智能体
