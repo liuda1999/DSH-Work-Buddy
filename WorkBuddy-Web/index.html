@@ -3949,6 +3949,15 @@ select.form-input option{background:#12161F;color:var(--text-2)}
             <button type="button" class="ssc-guard-btn" id="sscGuardSwitch">切换通用兼容模式</button>
             <button type="button" class="ssc-guard-x" id="sscGuardClose" title="关闭">✕</button>
           </div>
+          <!-- 第三方模型推荐提示条（切换模型后显示，不遮挡输入栏；区别于工具失败护栏条） -->
+          <div id="sscModeHint" hidden>
+            <span class="ssc-guard-ico">💡</span>
+            <div class="ssc-guard-body">
+              <div class="ssc-guard-title">当前为第三方模型，建议切换「通用兼容模式」以启用终端 / 文件编辑 / 搜索 / 技能等完整工具面</div>
+            </div>
+            <button type="button" class="ssc-guard-btn" id="sscModeHintSwitch">切换通用兼容模式</button>
+            <button type="button" class="ssc-guard-x" id="sscModeHintClose" title="关闭">✕</button>
+          </div>
           <div class="ss-chat" id="ssChat">
             <!-- 消息列表 -->
             <div class="ss-chat-scroll" id="ssChatScroll">
@@ -6641,11 +6650,12 @@ async function sscSelectModel(prov, model) {
     // 切换模型后重新判定模态：视觉模型显示图片按钮，非视觉模型隐藏并丢弃已选图片
     chatEvalVision(prov, model);
     toast('模型已切换为 ' + model);
-    // 默认模式联动：第三方模型 + 高工具依赖模式 + 会话未开始 + 未提示过 → 推荐通用兼容模式
+    // 默认模式联动：第三方模型 + 高工具依赖模式 + 会话未开始 + 未提示过 → 非阻塞提示条推荐通用兼容模式
+    // （不弹全屏确认框——全屏遮罩会覆盖输入栏导致用户无法点击输入）
     if (!CHAT.hasTurn && !CHAT.readonly && CHAT.modelClass === 'thirdparty'
       && (CHAT.preset === 'standard' || CHAT.preset === 'code' || CHAT.preset === 'cordis')
       && !CHAT.presetHintShown) {
-      suggestUniversalPreset();
+      showUniversalPresetHint();
     }
   } catch (e) {
     toast('切换失败：' + e.message);
@@ -6763,20 +6773,13 @@ function renderSscGuardBar(summary) {
   bar.hidden = false;
 }
 
-// 通用兼容模式推荐（任务 3/4 共用）：第三方模型 + 高工具依赖模式时弹 wbConfirm；
-// 确认 → agentPreset.select minimal（失败回滚原值 + toast）；取消 → 记录已提示
+// 通用兼容模式切换（任务 3/4 共用 + 提示条/护栏条按钮）：直接执行 agentPreset.select universal；
+// 失败回滚原值 + toast。注意：不再自动弹全屏 wbConfirm——全屏遮罩会覆盖输入栏导致用户无法输入，
+// 改为切换模型后显示非阻塞提示条（showUniversalPresetHint），由用户自行决定是否切换。
 async function suggestUniversalPreset() {
   if (!CHAT.sessionId || CHAT.readonly) return;
   if (CHAT.modelClass !== 'thirdparty') return;
   if (CHAT.preset !== 'standard' && CHAT.preset !== 'code' && CHAT.preset !== 'cordis') return;
-  const ok = await wbConfirm({
-    title: '建议切换通用兼容模式',
-    message: '当前是非 DeepSeek 第三方模型，工具调用能力可能不足。通用兼容模式专门为此设计：终端 + 文件编辑 + 文件搜索 + 网络搜索 + 技能（llm-wiki 等仍可用），兼容性最好。注意本地文件系统无沙箱——请谨慎授权，权限保持「工作区写入」或更低。',
-    okText: '切换通用兼容模式',
-    cancelText: '保持当前模式'
-  });
-  if (!CHAT.sessionId) return; // 弹窗期间会话已关闭
-  if (!ok) { CHAT.presetHintShown = true; return; }
   const prev = CHAT.preset;
   const target = WB_PRESET_MAP.universal; // 'universal'（harness 用户 preset，含 tool-skill）
   try {
@@ -6785,11 +6788,23 @@ async function suggestUniversalPreset() {
     CHAT.toolErrStreak = 0;
     renderSscGuardBar();
     renderSscChips();
+    document.getElementById('sscModeHint').hidden = true; // 切换成功：收起推荐提示条
     toast('已切换为通用兼容模式');
   } catch (e) {
     CHAT.preset = prev;
     toast('目标模式不可用，保持当前模式');
   }
+}
+
+// 第三方模型推荐提示条：切换模型后非阻塞展示（输入栏上方，不遮挡输入）；每次会话最多提示一次
+function showUniversalPresetHint() {
+  if (!CHAT.sessionId || CHAT.readonly) return;
+  if (CHAT.modelClass !== 'thirdparty') return;
+  if (CHAT.preset !== 'standard' && CHAT.preset !== 'code' && CHAT.preset !== 'cordis') return;
+  if (CHAT.presetHintShown) return;
+  CHAT.presetHintShown = true; // 只提示一次（用户关闭/切换后不再重复打扰）
+  const bar = document.getElementById('sscModeHint');
+  if (bar) bar.hidden = false;
 }
 
 // ---------- 权限级别（permissions 投影）：切换 ----------
@@ -6960,6 +6975,7 @@ async function ChatOpen(task, readonly) {
   sscAutoGrow();
   document.getElementById('sscMenu').hidden = true;
   document.getElementById('sscPop').hidden = true;
+  document.getElementById('sscModeHint').hidden = true; // 重置第三方模型推荐提示条（presetHintShown 同步在下方重置）
   renderSscChips();
   sscUpdateButtons();
   showSessionLoading(true);
@@ -7111,6 +7127,11 @@ function ChatClose() {
   document.getElementById('sscGuardSwitch').addEventListener('click', () => { suggestUniversalPreset(); });
   document.getElementById('sscGuardClose').addEventListener('click', () => {
     document.getElementById('sscGuardBar').hidden = true;
+  });
+  // 第三方模型推荐提示条：切换通用兼容模式 / 关闭（关闭仅隐藏，不重复弹出）
+  document.getElementById('sscModeHintSwitch').addEventListener('click', () => { suggestUniversalPreset(); });
+  document.getElementById('sscModeHintClose').addEventListener('click', () => {
+    document.getElementById('sscModeHint').hidden = true;
   });
   // 文件附件（文本块注入）：按钮唤起文件选择 → 逐文件读文本 → 预览
   document.getElementById('sscFileBtn').addEventListener('click', () => {
