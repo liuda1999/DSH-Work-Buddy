@@ -2,7 +2,7 @@
 
 DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集成了任务管理控制台（WorkBuddy-Web）、DeepSeek Harness 智能体组件和 LLM Wiki 文档组件。
 
-- **版本**：`0.1.95`
+- **版本**：`0.1.96`
 - **项目标识**：见根目录 [`VERSION`](./VERSION)
 
 ---
@@ -10,7 +10,7 @@ DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集�
 ## 目录结构
 
 ```
-DSH-WorkBuddy-0.1.95/
+DSH-WorkBuddy-0.1.96/
 ├── VERSION                 # 项目顶层版本号
 ├── README.md               # 本文件
 ├── start.bat               # 一键启动脚本（Windows，Web + 智能体）
@@ -31,7 +31,7 @@ DSH-WorkBuddy-0.1.95/
 
 - **入口文件**：`WorkBuddy-Web/index.html`
 - **一体化服务**：`WorkBuddy-Web/server.js`（固定端口 `0.0.0.0:8765`）
-- **版本**：`0.1.95`
+- **版本**：`0.1.96`
 
 ### 2. deepseek-harness
 
@@ -137,7 +137,7 @@ pnpm docs:preview
 本项目分发包为根目录下的：
 
 ```
-DSH-WorkBuddy-0.1.95.zip
+DSH-WorkBuddy-0.1.96.zip
 ```
 
 该压缩包已排除以下内容：
@@ -155,9 +155,15 @@ DSH-WorkBuddy-0.1.95.zip
 
 ## 版本策略
 
-- 整个 DSH Work Buddy 项目对外版本为 `0.1.95`（见 `VERSION`）。
-- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.95`。
+- 整个 DSH Work Buddy 项目对外版本为 `0.1.96`（见 `VERSION`）。
+- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.96`。
 - `deepseek-harness`、`llm-wiki` 等组件保留其自身原有版本，不强制统一。
+
+### v0.1.96 更新要点
+
+- **通用兼容模式升级：Responses API 优先 + Completions 兜底**：自定义 Provider 表单新增「自动适配」协议选项（默认），保存/获取模型时先经网关 `POST /api/probe-responses` 探测远端端点是否支持 OpenAI Responses API——支持则按 `openai-responses` 配置，不支持则自动回退 `openai-completions`，探测不可达时默认按 Responses 配置；提升智能体在通用兼容模式下执行任务、交换数据、调度工具的能力。
+- **空密钥本地端点兜底**：自定义 Provider 密钥留空时不再声明 `apiKeyEnv`（避免 harness 抛 MISSING_CREDENTIAL），改为注入占位 `Authorization: Bearer local` 头，本地 vLLM / llama.cpp / ollama 等无需密钥端点可直接启用。
+- **协议探测接口**：网关新增 `/api/probe-responses`（POST `{baseURL, model?}` → `{supported, status, note}`），404 区分「模型不存在（路由存在）」与「路由不存在」，为协议自适应提供准确依据。
 
 ### v0.1.95 更新要点
 

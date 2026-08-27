@@ -1,6 +1,7 @@
 // DSH Work Buddy 一体化服务：固定端口 8765，随启动自动拉起 dsh 智能体（127.0.0.1:3080），
 // 并提供 /harness/ 同源代理、RPC 转发、WebSocket 桥接、本地业务 mock 与静态文件服务。
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -465,7 +466,7 @@ function shutdown(reason, code = 0) {
 const LOCAL_API_PREFIXES = [
   '/api/workspaces', '/api/tasks', '/api/archive', '/api/wiki',
   '/api/resources', '/api/schedule', '/api/search', '/api/plugin-community',
-  '/api/model-modality'
+  '/api/model-modality', '/api/probe-responses'
 ];
 const isLocalApi = (p) => p === '/api/workspaces/sync-harness' || LOCAL_API_PREFIXES.some((pre) => p === pre || p.startsWith(pre + '/'));
 
@@ -1638,6 +1639,54 @@ function modelSupportsImage(provider, model, piAiValue) {
   return cat === true;
 }
 
+// 探测远端端点是否支持 OpenAI Responses API：POST {baseURL}/responses（通用兼容模式协议自适应的判定依据）
+// 判定规则：
+//   - 2xx / 400 / 401 / 403 / 413 / 415 / 422 / 429 / 5xx → 路由存在（错误体是载荷/鉴权/服务级）→ 支持
+//   - 404 且错误体提到「模型不存在」（404 model-not-found）→ 路由存在（只是探测模型名未知）→ 支持
+//   - 404（其余）/ 405 / 501 → 路由缺失 → 不支持
+//   - 网络不可达 / 超时 → supported: null（未知，由前端保守默认 Responses 并提示）
+function probeResponsesSupport(baseURL, model) {
+  return new Promise((resolve) => {
+    let u;
+    try { u = new URL(String(baseURL || '').replace(/\/+$/, '') + '/responses'); }
+    catch (e) { return resolve({ supported: null, status: 0, note: '无效 Base URL' }); }
+    const mod = u.protocol === 'https:' ? https : http;
+    const body = JSON.stringify({ model: model || '__probe__', input: '' });
+    const r = mod.request({
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search,
+      method: 'POST',
+      timeout: 6000,
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer probe', 'Content-Length': Buffer.byteLength(body) }
+    }, (res) => {
+      let data = '';
+      res.on('data', (c) => (data += c));
+      res.on('end', () => {
+        const status = res.statusCode;
+        const text = data.slice(0, 600);
+        let parsed = null;
+        try { parsed = JSON.parse(data); } catch (e) { /* 非 JSON 忽略 */ }
+        if (status >= 200 && status < 300) return resolve({ supported: true, status, note: '2xx 支持' });
+        if (status === 404) {
+          // 模型缺失（route 存在）与路由缺失（route 不存在）的区分：
+          // 前者错误体含明确的模型信号（"The model ... does not exist" / model_not_found 等），
+          // 裸 "Not Found" 仅表示该端点没有 /responses 路由（Completions-only / 无关端点）。
+          const raw = (parsed && parsed.error) ? String(parsed.error.message || JSON.stringify(parsed.error)) : text;
+          const modelish = /\bmodel\b|model_not_found|does not exist|no such|unknown model/i.test(raw);
+          if (modelish) return resolve({ supported: true, status, note: '404 model-not-found（路由存在）' });
+          return resolve({ supported: false, status, note: '404 路由不存在' });
+        }
+        if (status === 405 || status === 501) return resolve({ supported: false, status, note: status + ' 不支持 Responses' });
+        return resolve({ supported: true, status, note: '路由存在（' + status + '）' });
+      });
+    });
+    r.on('error', (e) => resolve({ supported: null, status: 0, note: '端点不可达: ' + (e.code || e.message) }));
+    r.on('timeout', () => { r.destroy(); resolve({ supported: null, status: 0, note: '探测超时' }); });
+    r.end(body);
+  });
+}
+
 async function handleLocalApi(req, res, urlPath, params) {
   // 智能体同步探测
   if (urlPath === '/api/workspaces/sync-harness' && req.method === 'POST') {
@@ -2581,6 +2630,16 @@ function findArchiveSessionDir(groupName, taskId) {
       // settings 读取失败（智能体未就绪等）→ 保守判定不支持图片
       return sendJson(res, 200, { provider, model, image: false, degraded: true });
     }
+  }
+
+  // Responses 协议探测：POST /api/probe-responses { baseURL, model? } → { baseURL, supported, status, note }
+  // 通用兼容模式协议自适应：默认优先 Responses，端点不支持时前端自动回退 Completions
+  if (urlPath === '/api/probe-responses' && req.method === 'POST') {
+    const body = await readBody(req);
+    const baseURL = String(body.baseURL || '').trim();
+    if (!baseURL) return sendJson(res, 400, { ok: false, error: { message: '缺少 baseURL 参数' } });
+    const probe = await probeResponsesSupport(baseURL, body.model ? String(body.model) : '');
+    return sendJson(res, 200, { baseURL, supported: probe.supported, status: probe.status, note: probe.note });
   }
 
   return null; // 未匹配本地路由

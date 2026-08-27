@@ -3585,8 +3585,9 @@ select.form-input option{background:#12161F;color:var(--text-2)}
                 <div>
                   <div class="form-label">API 协议</div>
                   <select class="form-input" id="scCustomApi">
-                    <option value="openai-completions">openai-completions</option>
+                    <option value="auto" selected>自动适配（优先 Responses API，不支持自动回退 Completions）</option>
                     <option value="openai-responses">openai-responses</option>
+                    <option value="openai-completions">openai-completions</option>
                     <option value="anthropic-messages">anthropic-messages</option>
                   </select>
                 </div>
@@ -9208,6 +9209,7 @@ function cancelEditCustomProvider() {
 }
 
 // 「获取可用模型」：对表单中的 Base URL 调 OpenAI 兼容 GET /models（本地 vLLM / llama.cpp / ollama 均提供）
+// 协议为「自动适配」时先探测 Responses 支持，用解析出的协议列举（/models 对两种 OpenAI 协议一致，均走 Bearer）
 async function discoverCustomModels() {
   const msg = document.getElementById('scCustomMsg');
   const baseURL = document.getElementById('scCustomBaseURL').value.trim();
@@ -9216,7 +9218,18 @@ async function discoverCustomModels() {
   if (!baseURL) { msg.className = 'set-msg err'; msg.textContent = '请先填写 Base URL 再获取模型列表。'; return; }
   msg.className = 'set-msg'; msg.textContent = '正在从端点获取模型列表…';
   try {
-    const r = await wbRpc('llm.discoverModels', { settingsNs: 'llm-pi-ai', baseURL, api, apiKey: key || undefined });
+    let probeApi = api;
+    if (api === 'auto') {
+      // 探测失败默认按 Completions 列举（/models 列表对两种协议等价）
+      try {
+        const probe = await fetch('/api/probe-responses', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ baseURL })
+        }).then((r) => r.json()).catch(() => null);
+        probeApi = probe && probe.supported === true ? 'openai-responses' : 'openai-completions';
+      } catch (e) { probeApi = 'openai-completions'; }
+    }
+    const r = await wbRpc('llm.discoverModels', { settingsNs: 'llm-pi-ai', baseURL, api: probeApi, apiKey: key || undefined });
     const models = ((r && r.models) || []).map((x) => x && x.id).filter(Boolean);
     if (!models.length) { msg.className = 'set-msg err'; msg.textContent = '端点未返回可用模型（不支持 GET /models 时请手动填写）。'; return; }
     document.getElementById('scCustomModels').value = models.join(', ');
@@ -9226,6 +9239,23 @@ async function discoverCustomModels() {
     msg.className = 'set-msg err';
     msg.textContent = '获取失败: ' + ((e && e.message) || e).slice(0, 140);
   }
+}
+
+// 构建自定义 Provider profile（纯函数）：协议已由调用方解析（auto→探测→responses/completions）
+// + 空密钥本地端点兜底：不声明 apiKeyEnv（避免 harness resolveApiKey 抛 MISSING_CREDENTIAL），注入占位 Authorization 头
+function buildCustomProviderProfile({ route, displayName, baseURL, api, key, models, vision, keepExistingKey }) {
+  const profile = { displayName, baseURL, api };
+  if (Array.isArray(models) && models.length) profile.models = models;
+  // 多模态声明：勾选则声明 provider 级默认输入模态（自定义端点无目录条目，网关据此判定支持图片输入）
+  profile.defaultInput = vision ? ['text', 'image'] : ['text'];
+  if (key || keepExistingKey) {
+    // 有密钥（或编辑时「留空保留」既有密钥）：声明 apiKeyEnv（凭证经设置中心 credentials 存储）
+    profile.apiKeyEnv = deriveKeyRef(route);
+  } else {
+    // 空密钥本地端点兜底
+    profile.headers = { Authorization: 'Bearer local' };
+  }
+  return profile;
 }
 
 async function saveCustomProvider() {
@@ -9245,19 +9275,34 @@ async function saveCustomProvider() {
     if (!ROUTE_RE.test(route)) { msg.className = 'set-msg err'; msg.textContent = 'Route ID 需为小写字母数字与中划线（如 openai / my-provider）'; return; }
     if (!baseURL) { msg.className = 'set-msg err'; msg.textContent = 'Base URL 不能为空'; return; }
     const existing = SSC.custom.find((c) => c.route === route);
-    if (existing && existing.profile && existing.profile.baseURL && existing.profile.baseURL !== baseURL) {
-      // 编辑：允许改协议/端点；确认已在列表「编辑」入口进入
-    }
     const models = modelsRaw.split(/[,，]/).map((s) => s.trim()).filter(Boolean).map((id) => ({ id, name: id }));
     const keyRef = deriveKeyRef(route);
-    const profile = { apiKeyEnv: keyRef, displayName, baseURL, api };
-    if (models.length) profile.models = models;
-    // 多模态声明：勾选则声明 provider 级默认输入模态（自定义端点无目录条目，网关据此判定支持图片输入）
-    profile.defaultInput = document.getElementById('scCustomVision').checked ? ['text', 'image'] : ['text'];
+    // 编辑时「留空保留」：已有密钥且本次留空 → 保留 apiKeyEnv 与既有密钥；否则视为空密钥本地端点
+    const keepExistingKey = !key && existing && SSC.keyState[keyRef] && SSC.keyState[keyRef].configured;
+
+    // 协议自动适配：auto → 探测端点是否支持 Responses API；不支持则回退 Completions
+    let resolvedApi = api;
+    let apiNote = '';
+    if (api === 'auto') {
+      msg.textContent = '保存中（探测 Responses 协议）...';
+      const probe = await fetch('/api/probe-responses', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseURL, model: (models[0] && models[0].id) || undefined })
+      }).then((r) => r.json()).catch(() => null);
+      if (probe && probe.supported === true) { resolvedApi = 'openai-responses'; apiNote = '；已自动适配 Responses API'; }
+      else if (probe && probe.supported === false) { resolvedApi = 'openai-completions'; apiNote = '；端点不支持 Responses，已回退 Completions'; }
+      else { resolvedApi = 'openai-responses'; apiNote = '；探测不可达，默认按 Responses 配置'; }
+    }
+
+    const profile = buildCustomProviderProfile({
+      route, displayName, baseURL, api: resolvedApi, key, models, keepExistingKey,
+      vision: document.getElementById('scCustomVision').checked,
+    });
     const res = await wbRpc('settings.mutate', { ns: 'llm-pi-ai', ops: [{ op: 'set', path: ['providers', route], value: profile }], expectedRevision: SSC.piAi.revision });
     SSC.piAi.revision = res.revision;
     SSC.piAi.value = res.value;
     if (key) await wbRpc('credentials.set', { ref: keyRef, value: key });
+    else if (!keepExistingKey) await wbRpc('credentials.unset', { ref: keyRef }).catch(() => {});
     // 刷新列表与默认模型数据源
     SSC.custom = Object.keys((SSC.piAi.value && SSC.piAi.value.providers) || {}).map((r) => ({ route: r, profile: SSC.piAi.value.providers[r] }));
     SSC.keyState[keyRef] = { configured: key ? true : (existing && SSC.keyState[keyRef] && SSC.keyState[keyRef].configured), source: key ? 'file' : (SSC.keyState[keyRef] && SSC.keyState[keyRef].source) };
@@ -9266,7 +9311,7 @@ async function saveCustomProvider() {
     renderSettingsDefault();
     cancelEditCustomProvider();
     msg.className = 'set-msg ok';
-    msg.textContent = existing ? `已更新自定义 Provider「${displayName}」（在对话模型列表中刷新即可选用）` : `已添加自定义 Provider「${displayName}」（在对话模型列表中刷新即可选用）`;
+    msg.textContent = (existing ? `已更新自定义 Provider「${displayName}」` : `已添加自定义 Provider「${displayName}」`) + apiNote + '（在对话模型列表中刷新即可选用）';
   } catch (e) {
     msg.className = 'set-msg err';
     msg.textContent = (e.message || e).slice(0, 140);
