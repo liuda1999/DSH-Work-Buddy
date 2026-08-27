@@ -9,7 +9,7 @@ HARNESS="$ROOT/deepseek-harness/deepseek-harness-master"
 WIKI="$ROOT/llm-wiki/project"
 
 echo "=========================================="
-echo "  DSH Work Buddy 一键启动  (v0.1.96)"
+echo "  DSH Work Buddy 一键启动  (v0.1.97)"
 echo "   默认端口: 8765（支持同局域网跨设备访问）"
 echo "=========================================="
 echo

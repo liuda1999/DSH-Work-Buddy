@@ -1657,7 +1657,7 @@ function probeResponsesSupport(baseURL, model) {
       port: u.port || (u.protocol === 'https:' ? 443 : 80),
       path: u.pathname + u.search,
       method: 'POST',
-      timeout: 6000,
+      timeout: 30000,
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer probe', 'Content-Length': Buffer.byteLength(body) }
     }, (res) => {
       let data = '';

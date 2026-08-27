@@ -2,7 +2,7 @@
 
 DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集成了任务管理控制台（WorkBuddy-Web）、DeepSeek Harness 智能体组件和 LLM Wiki 文档组件。
 
-- **版本**：`0.1.96`
+- **版本**：`0.1.97`
 - **项目标识**：见根目录 [`VERSION`](./VERSION)
 
 ---
@@ -10,7 +10,7 @@ DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集�
 ## 目录结构
 
 ```
-DSH-WorkBuddy-0.1.96/
+DSH-WorkBuddy-0.1.97/
 ├── VERSION                 # 项目顶层版本号
 ├── README.md               # 本文件
 ├── start.bat               # 一键启动脚本（Windows，Web + 智能体）
@@ -31,7 +31,7 @@ DSH-WorkBuddy-0.1.96/
 
 - **入口文件**：`WorkBuddy-Web/index.html`
 - **一体化服务**：`WorkBuddy-Web/server.js`（固定端口 `0.0.0.0:8765`）
-- **版本**：`0.1.96`
+- **版本**：`0.1.97`
 
 ### 2. deepseek-harness
 
@@ -137,7 +137,7 @@ pnpm docs:preview
 本项目分发包为根目录下的：
 
 ```
-DSH-WorkBuddy-0.1.96.zip
+DSH-WorkBuddy-0.1.97.zip
 ```
 
 该压缩包已排除以下内容：
@@ -155,9 +155,14 @@ DSH-WorkBuddy-0.1.96.zip
 
 ## 版本策略
 
-- 整个 DSH Work Buddy 项目对外版本为 `0.1.96`（见 `VERSION`）。
-- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.96`。
+- 整个 DSH Work Buddy 项目对外版本为 `0.1.97`（见 `VERSION`）。
+- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.1.97`。
 - `deepseek-harness`、`llm-wiki` 等组件保留其自身原有版本，不强制统一。
+
+### v0.1.97 更新要点
+
+- **本地模型（Qwen3.8）通用兼容模式多方实测通过**：使用设置中心添加的本地 Qwen3.8 端点（`qwen` provider，`openai-responses`）在通用兼容模式下完成全链路验证——协议自动适配（`/api/probe-responses` 判定 Respons 支持）、会话模型选择（`session.models`/`session.selectModel`）、图片模态判定（`/api/model-modality` → `image=true`）、工具面装配（pwsh/grep/glob/web_search/skill/str_replace_editor）、真实工具调用（pwsh `Get-Location`、grep 搜索均产生 `tool/result`）共 26 项全部通过（`_test_probe_qwen_universal.mjs`）。
+- **协议探测超时延长至 30s**：`/api/probe-responses` 探测超时由 6s 提升至 30s，覆盖慢速本地端点冷启动（如 27B 本地大模型首请求加载 >6s）导致的探测误判，确保「Responses 优先 + Completions 兜底」协议自动适配在本地大模型场景下准确判定。
 
 ### v0.1.96 更新要点
 
