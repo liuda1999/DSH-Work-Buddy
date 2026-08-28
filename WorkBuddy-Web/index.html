@@ -5483,6 +5483,7 @@ const CHAT = {
   stream: null,             // 流式态 {turn, step, msgEl, bubble, blocks:Map<index,{kind,root,textEl,text}>, caret}
   toolCards: new Map(),     // callId → 工具卡 DOM（tool/call 与 tool/result 双向对齐）
   pendingRpcIds: new Map(), // 信封 rpcId → 乐观用户气泡 DOM
+  seenRpcIds: new Set(),    // 已渲染过的 rpcId（inbox splice 重注入去重，见 chatEvUserMessage）
   cmdNotes: new Map(),      // command/run 事件 seq → 命令提示卡（command/done 按 sourceEventSeq 回填）
   hasMore: false,
   oldestSeq: null,
@@ -5506,7 +5507,9 @@ const CHAT = {
   hasTurn: false,           // 会话已开始对话（存在 turn/真实消息）：此后不可切换工作模式
   modelClass: null,         // 当前模型来源分类：'deepseek'（官方）| 'thirdparty'（第三方/本地端点），null=未知
   presetHintShown: false,   // 第三方模型 → 通用兼容模式推荐提示已展示（每次会话最多自动弹一次）
-  toolErrStreak: 0,         // 连续工具调用失败计数（>=3 触发护栏条 + 取消当前回合）
+  toolErrStreak: 0,         // 连续工具调用失败计数（单回合内 >=3 触发护栏条 + 取消当前回合；turn/start 重置）
+  guardCancelledTurn: false, // 本回合已发起过 session.cancel（每回合仅取消一次，防 cancel 风暴）
+  guardDismissed: false,     // 用户手动关闭护栏条（本回合内不再自动弹出；turn/start 重置）
   imageLimits: null,        // 图片附件限制投影（history projections.values.imageLimits）
   perms: null,              // 权限级别投影（projections.values.permissions = {options,currentValue}）
   attach: [],               // 待发送图片附件 [{name,mediaType,data,size}]
@@ -5752,7 +5755,14 @@ function chatOnEvent(ev, view) {
     case 'tool/call': chatEvToolCall(d); break;
     case 'tool/result': chatEvToolResult(d); break;
     case 'turn/start':
-      if (!CHAT.folding) { CHAT.running = true; sscUpdateButtons(); renderSscChips(); }
+      if (!CHAT.folding) {
+        // 护栏计数按回合重置：只拦截「单回合内」的失控循环——排队/转向消息开的新回合、
+        // 失败回合经 inbox splice 重注入开的新回合，计数都从 0 开始，不携带残留（避免误杀/漏杀）
+        CHAT.toolErrStreak = 0;
+        CHAT.guardCancelledTurn = false;
+        CHAT.guardDismissed = false;
+        CHAT.running = true; sscUpdateButtons(); renderSscChips();
+      }
       break;
     case 'turn/end':
       chatEvTurnEnd(d);
@@ -5821,9 +5831,14 @@ function chatEvUserMessage(d) {
   if (src.rpcId && CHAT.pendingRpcIds.has(src.rpcId)) {
     const el = CHAT.pendingRpcIds.get(src.rpcId);
     CHAT.pendingRpcIds.delete(src.rpcId);
+    CHAT.seenRpcIds.add(src.rpcId); // 记录已见 rpcId（splice 重注入去重）
     el.classList.remove('pending');
     return;
   }
+  // 失败回合经 agent/inbox/spliced 重注入同一消息（保留原 rpcId）再次 claim 时，会产生第二个
+  // 相同 rpcId 的 user/message 事件——气泡已渲染过，跳过（含历史折叠回放，避免"同一消息显示两遍"）
+  if (src.rpcId && CHAT.seenRpcIds.has(src.rpcId)) return;
+  if (src.rpcId) CHAT.seenRpcIds.add(src.rpcId);
   // 插件注入的上下文（文件变更通知等）：淡提示卡，长文截断
   if (src.kind && src.kind !== 'user') {
     const t = texts.join('\n');
@@ -5978,15 +5993,27 @@ function chatEvToolResult(d) {
   if (body.length > 4000) body = body.slice(0, 4000) + '\n…（已截断）';
   const bodyEl = card.querySelector('.ss-tool-body');
   if (bodyEl) bodyEl.innerHTML = `<pre>${esc(body)}</pre>`;
-  // 失败护栏：连续失败 >=3 → 渲染护栏条；恰好到 3 次时取消当前回合（不自动重试），避免工具调用失控循环
+  // 失败护栏：单回合内连续失败 >=3 → 渲染护栏条；达到阈值时取消当前回合一次（每回合仅一次，失败自动补发）
   if ((CHAT.toolErrStreak || 0) >= 3) {
     const errTxt = isErr ? (txts.join('\n') || body) : '';
     renderSscGuardBar(errTxt);
-    if (CHAT.toolErrStreak === 3 && CHAT.sessionId && !CHAT.folding) {
-      wbRpc('session.cancel', { sessionId: CHAT.sessionId }).catch(() => {});
+    if (!CHAT.guardCancelledTurn && CHAT.sessionId && !CHAT.folding && !CHAT.readonly) {
+      CHAT.guardCancelledTurn = true; // 本回合只取消一次（避免 cancel 风暴；turn/start 重新武装）
+      chatGuardCancel();
     }
   } else {
     renderSscGuardBar();
+  }
+}
+
+// 护栏取消当前回合：失败时 1s 后自动补发一次（不再静默丢失取消信号）
+async function chatGuardCancel() {
+  const sid = CHAT.sessionId;
+  try {
+    await wbRpc('session.cancel', { sessionId: sid });
+  } catch (e) {
+    await new Promise(r => setTimeout(r, 1000));
+    wbRpc('session.cancel', { sessionId: sid }).catch(() => {});
   }
 }
 
@@ -6109,6 +6136,7 @@ async function chatLoadHistory() {
     CHAT.loadmoreEl = null;
     CHAT.toolCards = new Map();
     CHAT.pendingRpcIds = new Map();
+    CHAT.seenRpcIds = new Set();
     CHAT.cmdNotes = new Map();
     CHAT.stream = null;
     CHAT.oldestSeq = null;
@@ -6334,6 +6362,20 @@ function isThirdPartyModel(provider) {
   return !!provider && provider !== 'deepseek-official';
 }
 
+// 网关协议降级影子 provider 前缀（与 server.js FALLBACK_SHADOW_PREFIX 保持一致）：
+// 影子是对话窗口的运行期产物（原 provider 的 openai-completions 复制品，仅被降级会话 selectModel 使用），
+// 对用户不可见——设置中心自定义列表、模型弹层、默认模型选择器统一过滤。
+const WB_FB_PREFIX = 'wb-fb-';
+// 影子显示名映射：wb-fb-<route> → <route>（被降级会话的模型 chip 仍显示原 provider 名）
+function chatProviderDisplay(p) {
+  const s = String(p || '');
+  return s.startsWith(WB_FB_PREFIX) ? s.slice(WB_FB_PREFIX.length) : s;
+}
+// 从 llm-pi-ai providers 提取用户可见的自定义路由（排除降级影子）
+function visibleCustomRoutes(providers) {
+  return Object.keys(providers || {}).filter((r) => !r.startsWith(WB_FB_PREFIX));
+}
+
 // Web 侧工作模式映射表：id=Web 展示名、harness=实际 agentPreset id（agentPreset.select 提交 harness id）。
 // 「通用兼容」映射到 Web 自定义 preset `universal`（harness 用户 preset 根，含 tool-skill 技能目录 + 持久 bash + 文件编辑，
 // 由网关 ensureUniversalPreset 幂等安装，trust:user）——保留 llm-wiki 等技能可用，同时避开 DeepSeek 专用/复杂工具。
@@ -6494,9 +6536,10 @@ function renderSscChips() {
   const box = document.getElementById('sscChips');
   if (!box) return;
   const cur = CHAT.models && CHAT.models.current;
+  const provDisp = cur ? chatProviderDisplay(cur.provider) : ''; // 影子 wb-fb-* 映射回原 provider 名显示
   const tpBadge = (cur && isThirdPartyModel(cur.provider))
-    ? `<span class="rs-badge" style="margin-left:6px" title="第三方/本地模型（${esc(cur.provider)}）">第三方</span>` : '';
-  let html = `<button class="ssc-chip" id="sscModelChip" title="点击选择模型${cur ? `（当前 ${esc(cur.provider || '')} / ${esc(cur.model || '')}）` : ''}">
+    ? `<span class="rs-badge" style="margin-left:6px" title="第三方/本地模型（${esc(provDisp)}）">第三方</span>` : '';
+  let html = `<button class="ssc-chip" id="sscModelChip" title="点击选择模型${cur ? `（当前 ${esc(provDisp || '')} / ${esc(cur.model || '')}）` : ''}">
     模型 <span class="ssc-chip-val">${esc(cur ? (cur.model || '—') : '…')}</span>${tpBadge} ▾</button>`;
   html += `<button class="ssc-chip" id="sscModeChip" title="工作模式（对话开始前可切换）">
     模式 <span class="ssc-chip-val">${esc(chatPresetName(CHAT.preset))}</span> ▾</button>`;
@@ -6611,6 +6654,7 @@ function renderSscPop() {
   let html = '<div class="ssc-pop-head"><span class="ssc-pop-title">模型目录</span>'
     + '<button type="button" class="ssc-pop-refresh" data-ssc-refresh-models title="重新从智能体获取模型列表（新增 Provider 后无需重开会话即可刷新出来）">⟳ 刷新</button></div>';
   for (const g of m.groups || []) {
+    if (g.id && String(g.id).startsWith(WB_FB_PREFIX)) continue; // 跳过降级影子分组（wb-fb-*，运行期产物）
     html += `<div class="ssc-pop-group">${esc(g.name || g.id)}</div>`;
     for (const mm of g.models || []) {
       const isCur = cur.provider === g.id && cur.model === mm.id;
@@ -6755,14 +6799,23 @@ async function sscSelectPreset(id) {
   }
 }
 
-// 工具失败护栏条渲染：toolErrStreak>=3 显示（含失败摘要，截断 200 字符），否则自动隐藏；
-// 摘要为空字符串时隐藏摘要行
+// 工具失败护栏条渲染：单回合内 toolErrStreak>=3 显示（含失败摘要，截断 200 字符），否则自动隐藏；
+// 摘要为空字符串时隐藏摘要行。按当前工作模式分化文案与按钮：
+//   universal（用户已在通用兼容模式）→ 建议「更换模型/检查工具配置」，按钮打开模型选择弹层；
+//   其他模式 → 建议「切换通用兼容模式」，按钮直接切换（suggestUniversalPreset）
 function renderSscGuardBar(summary) {
   const bar = document.getElementById('sscGuardBar');
   if (!bar) return;
-  if ((CHAT.toolErrStreak || 0) < 3) { bar.hidden = true; return; }
+  if ((CHAT.toolErrStreak || 0) < 3 || CHAT.guardDismissed) { bar.hidden = true; return; }
   const t = bar.querySelector('.ssc-guard-title');
-  if (t) t.textContent = `当前模型工具调用频繁失败（${CHAT.toolErrStreak} 次），建议切换通用兼容模式或更换模型`;
+  const btn = document.getElementById('sscGuardSwitch');
+  if (CHAT.preset === 'universal') {
+    if (t) t.textContent = `当前模型工具调用频繁失败（${CHAT.toolErrStreak} 次），建议更换模型或检查工具配置（如搜索 API 密钥）`;
+    if (btn) btn.textContent = '更换模型';
+  } else {
+    if (t) t.textContent = `当前模型工具调用频繁失败（${CHAT.toolErrStreak} 次），建议切换通用兼容模式或更换模型`;
+    if (btn) btn.textContent = '切换通用兼容模式';
+  }
   const s = bar.querySelector('.ssc-guard-sum');
   if (s) {
     let txt = summary || '';
@@ -6941,6 +6994,7 @@ async function ChatOpen(task, readonly) {
   CHAT.stream = null;
   CHAT.toolCards = new Map();
   CHAT.pendingRpcIds = new Map();
+  CHAT.seenRpcIds = new Set();
   CHAT.cmdNotes = new Map();
   CHAT.queue = [];
   CHAT.skills = null;
@@ -7018,6 +7072,7 @@ function ChatClose() {
   CHAT.stream = null;
   CHAT.running = false;
   CHAT.pendingRpcIds.clear();
+  CHAT.seenRpcIds.clear();
   CHAT.attach = [];
   CHAT.files = [];
   CHAT.vision = null;
@@ -7123,9 +7178,21 @@ function ChatClose() {
       sscSelectModel(it.dataset.prov, it.dataset.model);
     }
   });
-  // 护栏条：切换通用兼容模式（复用公共切换逻辑）/ 关闭
-  document.getElementById('sscGuardSwitch').addEventListener('click', () => { suggestUniversalPreset(); });
+  // 护栏条按钮：按当前模式分化——universal 已在通用兼容模式 → 打开模型选择弹层（建议换模型）；
+  // 其他模式 → 切换通用兼容模式（suggestUniversalPreset）
+  document.getElementById('sscGuardSwitch').addEventListener('click', () => {
+    if (CHAT.preset === 'universal') {
+      CHAT.sscPopKind = 'model';
+      const pop = document.getElementById('sscPop');
+      pop.hidden = false;
+      renderSscPop();
+    } else {
+      suggestUniversalPreset();
+    }
+  });
+  // 关闭护栏条：本回合内不再自动弹出（turn/start 重置；用户仍可换模型/换模式自救）
   document.getElementById('sscGuardClose').addEventListener('click', () => {
+    CHAT.guardDismissed = true;
     document.getElementById('sscGuardBar').hidden = true;
   });
   // 第三方模型推荐提示条：切换通用兼容模式 / 关闭（关闭仅隐藏，不重复弹出）
@@ -8931,8 +8998,8 @@ async function loadSettingsPage() {
     };
     SSC.allNamespaces = d.namespaces || [];
 
-    // 自定义 provider：只列用户实际添加的（llm-pi-ai.value.providers 中存在的键）
-    const routes = Object.keys((SSC.piAi.value && SSC.piAi.value.providers) || {});
+    // 自定义 provider：只列用户实际添加的（llm-pi-ai.value.providers 中存在的键；排除降级影子 wb-fb-*）
+    const routes = visibleCustomRoutes(SSC.piAi.value && SSC.piAi.value.providers);
     SSC.custom = routes.map((r) => ({ route: r, profile: SSC.piAi.value.providers[r] }));
     // 批量查凭证状态（含 web-search 凭证引用）
     const wsEnvRef = (SSC.plugins.ws.value && SSC.plugins.ws.value.apiKeyEnv) || 'DEEPSEEK_API_KEY';
@@ -8979,6 +9046,7 @@ function rebuildActiveProviders() {
   SSC.activeProviders = {};
   (SSC.modelGroups || []).forEach((g) => {
     const key = g.provider || 'deepseek-official';
+    if (key.startsWith(WB_FB_PREFIX)) return; // 跳过降级影子分组（wb-fb-*，不出现在默认模型选择器）
     SSC.activeProviders[key] = { name: g.name || key, models: (g.models || []).map((mm) => mm.id) };
   });
   const piProvs = (SSC.piAi && SSC.piAi.value && SSC.piAi.value.providers) || {};
@@ -9390,7 +9458,7 @@ async function saveCustomProvider() {
     if (key) await wbRpc('credentials.set', { ref: keyRef, value: key });
     else if (!keepExistingKey) await wbRpc('credentials.unset', { ref: keyRef }).catch(() => {});
     // 刷新列表与默认模型数据源
-    SSC.custom = Object.keys((SSC.piAi.value && SSC.piAi.value.providers) || {}).map((r) => ({ route: r, profile: SSC.piAi.value.providers[r] }));
+    SSC.custom = visibleCustomRoutes(SSC.piAi.value && SSC.piAi.value.providers).map((r) => ({ route: r, profile: SSC.piAi.value.providers[r] }));
     SSC.keyState[keyRef] = { configured: key ? true : (existing && SSC.keyState[keyRef] && SSC.keyState[keyRef].configured), source: key ? 'file' : (SSC.keyState[keyRef] && SSC.keyState[keyRef].source) };
     rebuildActiveProviders();
     renderSettingsCustom();
@@ -9498,7 +9566,7 @@ async function saveCatalogProvider(provider) {
     // 同步目录 active 状态与默认模型数据源
     const pList = await wbRpc('llm.providers', {});
     SSC.catalog = (pList.providers || []).filter((x) => x.provider !== 'deepseek-official');
-    SSC.custom = Object.keys((SSC.piAi.value && SSC.piAi.value.providers) || {}).map((r) => ({ route: r, profile: SSC.piAi.value.providers[r] }));
+    SSC.custom = visibleCustomRoutes(SSC.piAi.value && SSC.piAi.value.providers).map((r) => ({ route: r, profile: SSC.piAi.value.providers[r] }));
     SSC.keyState[ref] = { configured: key ? true : (SSC.keyState[ref] && SSC.keyState[ref].configured), source: key ? 'file' : (SSC.keyState[ref] && SSC.keyState[ref].source) };
     rebuildActiveProviders();
     renderCatalogProviders();
@@ -9523,7 +9591,7 @@ async function removeCatalogProvider(provider) {
     SSC.catEdit = null;
     const pList = await wbRpc('llm.providers', {});
     SSC.catalog = (pList.providers || []).filter((x) => x.provider !== 'deepseek-official');
-    SSC.custom = Object.keys((SSC.piAi.value && SSC.piAi.value.providers) || {}).map((r) => ({ route: r, profile: SSC.piAi.value.providers[r] }));
+    SSC.custom = visibleCustomRoutes(SSC.piAi.value && SSC.piAi.value.providers).map((r) => ({ route: r, profile: SSC.piAi.value.providers[r] }));
     delete SSC.keyState[deriveKeyRef(provider)];
     rebuildActiveProviders();
     const autoRestored = await ensureDefaultModelValid(); // 若默认模型指向被删供应商 → 自动恢复 DeepSeek

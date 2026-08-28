@@ -450,8 +450,8 @@ function shutdown(reason, code = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[DSH Work Buddy] 正在关闭：${reason}`);
-  // 0) 运行期协议兜底：恢复临时降级的协议（不持久化降级结果；1.5s 内尽力完成，失败不阻塞退出）
-  Promise.race([restoreProtoOverrides(), new Promise((r) => setTimeout(r, 1500))])
+  // 0) 运行期协议兜底：清理降级影子 provider（原 provider 配置未被改动，无需恢复；1.5s 内尽力完成，失败不阻塞退出）
+  Promise.race([removeFallbackShadows(), new Promise((r) => setTimeout(r, 1500))])
     .catch(() => {})
     .then(() => {
       // 1) 主动销毁所有 WS 升级连接，避免 server.close() 等长连接卡住
@@ -1389,22 +1389,27 @@ function harnessRpc(method, payload = {}, rpcId) {
   });
 }
 
-// ---------- 运行期协议兜底（方案 A + 方向 E）：首次对话遇协议相关 4xx → 临时降级 Completions 重试一次 ----------
+// ---------- 运行期协议兜底（影子 Provider 会话隔离版）：协议相关 4xx → 影子路由降级重试一次 ----------
 // 背景：通用兼容模式在「配置期」用 probeResponsesSupport 预判端点是否支持 Responses API，
 // 但配置期判定可能在真实对话时失准（端点行为变化/探测盲区）。本机制在运行期兜底：
-//   首次对话 turn/end 出现协议相关错误（404 路由不存在 / 405 / 501）时，
-//   将对应 provider 路由临时降级为 openai-completions 并原样重发一次 prompt。
+//   本次 prompt 触发的新回合 turn/end 出现协议相关错误（404 路由不存在 / 405 / 501）时，
+//   创建影子 provider（wb-fb-<原route>，api=openai-completions）并仅对当前会话 selectModel
+//   切到影子后原样重发一次 prompt。
+// 会话隔离（核心约束）：降级只影响当前对话窗口的任务——原 provider 配置全程零改动、
+//   不碰设置中心持久化数据（影子条目由前端过滤隐藏）、不影响其他会话（selectModel 是会话级操作）。
 // 判定矩阵（仅以下触发降级，其余一律不触发）：
 //   触发：404 且错误体不含模型信号（裸 Not Found=路由不存在）、405、501
 //   不触发：401/403/429/5xx（网络/鉴权/排队/维护）、400/422（载荷/未知参数）、
 //           404 model-not-found（路由存在仅模型未知，降级无意义）、超时、连接失败
-// 范围限定（方向 E 补充）：仅「当前选择了通用兼容模式（agentPreset=universal）」的会话触发；
+// 范围限定：仅「当前选择了通用兼容模式（agentPreset=universal）」的会话触发；
 //   非通用兼容模式会话不降级，与设置中心层互不影响。
-// 选择与生效解耦（方向 E）：设置中心用户原始协议选择持久化在 profile.protocol 字段，
-//   运行期降级仅修改生效字段 profile.api；网关启动时按 protocol 校准 api（见 calibrateProtocolApi）。
-// 不持久化：降级仅存于网关内存态（protoOverrides），优雅关闭时统一恢复原协议，网关不落盘任何降级记录。
-const protoOverrides = new Map();   // route → { originalApi }（运行期确证 Responses 不可用，改用 Completions）
-const fallbackWatchers = new Map(); // sessionId → watcher（观察首次对话 turn 结果）
+// 锚定（P4）：watcher 首次轮询记录既有最大 turn 号，只观察 turn > anchor 的新回合——
+//   既保证有历史回合的会话兜底仍生效，也避免把旧错误回合误判为本次失败导致重复执行。
+// 副作用防护（P7）：失败回合区间内已存在 tool/call|tool/result 事件 → 不自动重发（避免重复执行工具）。
+// 清理：影子仅存于设置命名空间的 wb-fb- 前缀条目（不复制密钥，复用原 apiKeyEnv 引用）；
+//   优雅关闭与启动校准时统一 unset（崩溃残留自愈，幂等）。
+const FALLBACK_SHADOW_PREFIX = 'wb-fb-';  // 影子 provider 路由前缀（前端设置中心/模型弹层据此隐藏）
+const fallbackWatchers = new Map(); // sessionId → watcher（观察本次 prompt 触发的回合结果）
 const FALLBACK_POLL_MS = 2000;
 const FALLBACK_DEADLINE_MS = 120000;
 const FALLBACK_RETRY_PREFIX = 'wb-fb-'; // 网关重试 session.prompt 的 rpcId 前缀（前端据此去重重试回显的用户气泡）
@@ -1425,15 +1430,6 @@ function isProtocolFallbackError(msg) {
   return false;
 }
 
-// 获取会话当前 provider 路由（session.models 的 current.provider）
-async function sessionCurrentRoute(sessionId) {
-  try {
-    const m = await harnessRpc('session.models', { sessionId });
-    const cur = m && m.current;
-    return (cur && cur.provider) || null;
-  } catch (e) { return null; }
-}
-
 // 获取会话当前工作模式（session.list 的 agentPreset；失败返回 null）
 // 用于「API 路由降级仅适用通用兼容模式会话」的判定：非 universal 会话不触发运行期降级。
 async function sessionPresetId(sessionId) {
@@ -1444,40 +1440,39 @@ async function sessionPresetId(sessionId) {
   } catch (e) { return null; }
 }
 
-// 将 route 临时降级为 openai-completions（仅对 api=openai-responses 的路由生效；已降级则跳过）
-// 返回是否成功切换。切换后记录到 protoOverrides（内存态），优雅关闭统一恢复。
-// 注意：不得仅凭 protoOverrides.has(route) 短路——同生命周期内路由可能被重新保存回 responses，
-// 故每次先核对当前 profile 的 api 字段再决定是否需要再次 mutate。
-async function downgradeRouteToCompletions(route) {
+// 创建/刷新降级影子 provider：wb-fb-<route>（复制原 profile、api 改 openai-completions）。
+// 原 provider 全程零改动；密钥不复制（影子复用原 profile.apiKeyEnv 的同一 credentials 引用）；
+// 不带 protocol 字段（避免被启动校准按用户协议选择回写）。
+// set 覆盖式写入保证幂等：原 provider 配置被用户修改后再次触发时，影子自动刷新为最新复制品。
+// 返回影子路由名（失败返回 null）。
+async function ensureFallbackShadow(route) {
   try {
     const d = await harnessRpc('settings.describe', {});
     const piNs = (d.namespaces || []).find((n) => n.ns === 'llm-pi-ai');
-    const profile = (piNs && piNs.value && piNs.value.providers && piNs.value.providers[route]) || null;
-    if (!profile) return false;
-    const api = String(profile.api || '');
-    if (api === 'openai-completions') {
-      // 已在降级态：补记覆盖（应对「已降级后被重新保存为 responses 再触发」的恢复锚点）
-      if (!protoOverrides.has(route)) protoOverrides.set(route, { originalApi: 'openai-responses' });
-      return true;
-    }
-    if (api !== 'openai-responses') return false; // 仅降级 Responses 协议路由；Completions/官方适配器无备用协议可降
+    const providers = (piNs && piNs.value && piNs.value.providers) || null;
+    const profile = (providers && providers[route]) || null;
+    if (!profile) return null;
+    if (String(profile.api || '') !== 'openai-responses') return null; // 仅降级 Responses 协议路由；Completions/官方适配器无备用协议可降
+    const shadow = FALLBACK_SHADOW_PREFIX + route;
+    const copy = { ...profile, api: 'openai-completions' };
+    delete copy.protocol; // 影子是运行期产物，不参与协议校准
+    copy.displayName = String(profile.displayName || route) + '（兼容）';
     await harnessRpc('settings.mutate', {
       ns: 'llm-pi-ai',
-      ops: [{ op: 'set', path: ['providers', route, 'api'], value: 'openai-completions' }],
-      expectedRevision: piNs.revision
+      ops: [{ op: 'set', path: ['providers', shadow], value: copy }],
+      expectedRevision: piNs && piNs.revision
     });
-    if (!protoOverrides.has(route)) protoOverrides.set(route, { originalApi: api });
-    return true;
-  } catch (e) { return false; }
+    return shadow;
+  } catch (e) { return null; }
 }
 
-// 观察会话首次对话的 turn 结果：协议 4xx → 降级重试一次；成功/非协议错误 → 结束观察
+// 观察本次 prompt 触发的新回合：协议 4xx → 影子降级重试一次；成功/非协议错误 → 结束观察
 function watchSessionFallback(sessionId, payload) {
   if (fallbackWatchers.has(sessionId)) return;
   const w = {
     sessionId, payload,
+    anchor: null,        // P4 锚点：prompt 发出前会话既有的最大 turn 号（首次轮询建立）
     retried: false,      // 是否已降级重试（仅重试一次）
-    lastTurn: 0,         // 已处理的最大 turn 号
     timer: null, deadline: null
   };
   w.timer = setInterval(() => pollSessionFallback(w).catch(() => {}), FALLBACK_POLL_MS);
@@ -1503,43 +1498,66 @@ async function pollSessionFallback(w) {
     const ev = ent && ent.event ? ent.event : ent;
     if (ev && ev.type === 'turn/end' && ev.data && typeof ev.data.turn === 'number') ends.push(ev);
   }
-  if (!ends.length) return;
-  const latest = ends.sort((a, b) => b.data.turn - a.data.turn)[0];
-  if (latest.data.turn <= w.lastTurn) return; // 已处理过
-  w.lastTurn = latest.data.turn;
+  // P4 锚定：首次轮询记录既有最大 turn 号，此后只观察本次 prompt 触发的新回合（turn > anchor）。
+  // 避免两个旧缺陷：① 历史回合的 turn/end 提前清掉 watcher（兜底失效）；
+  // ② 旧错误回合被误判为本次失败 → 对已在运行的新回合重复重发（同一消息执行两次）。
+  if (w.anchor === null) {
+    w.anchor = ends.reduce((mx, ev) => Math.max(mx, ev.data.turn), 0);
+    return;
+  }
+  const fresh = ends.filter((ev) => ev.data.turn > w.anchor);
+  if (!fresh.length) return;
+  const latest = fresh.sort((a, b) => b.data.turn - a.data.turn)[0];
   const reason = latest.data.reason || {};
   if (w.retried || reason.kind !== 'error') { clearSessionFallback(w); return; } // 重试已完成 / 本轮正常结束
   const msg = (reason.error && (reason.error.message || reason.error.code)) || '';
   if (!isProtocolFallbackError(msg)) { clearSessionFallback(w); return; } // 非协议错误（网络/排队/维护/参数）→ 不触发降级
-  // 触发降级：仅通用兼容模式会话 → 确认路由 → 临时切换 Completions → 原样重发 prompt 一次
+  // P7 副作用防护：失败回合区间内已发生工具调用 → 重发会重复执行已完成的工具（文件编辑等），不自动重试
+  const startSeq = latest.seq != null ? latest.seq : 0;
+  const hasToolSideEffect = entries.some((ent) => {
+    const ev = ent && ent.event ? ent.event : ent;
+    return typeof ev.seq === 'number' && ev.seq < startSeq
+      && (ev.type === 'tool/call' || ev.type === 'tool/result');
+  });
+  if (hasToolSideEffect) {
+    console.log(`[DSH Work Buddy] 运行期协议兜底：协议错误(${msg.slice(0, 90)})但回合已含工具调用，跳过自动重试（避免重复副作用）`);
+    clearSessionFallback(w);
+    return;
+  }
+  // 触发降级：仅通用兼容模式会话 → 确认路由 → 创建影子 → 仅切当前会话 → 原样重发 prompt 一次
   try {
     const preset = await sessionPresetId(w.sessionId);
     if (preset !== 'universal') { clearSessionFallback(w); return; } // 非通用兼容模式会话不触发 API 路由降级（与设置中心层互不影响）
-    const route = await sessionCurrentRoute(w.sessionId);
-    if (!route || !(await downgradeRouteToCompletions(route))) { clearSessionFallback(w); return; }
+    const m = await harnessRpc('session.models', { sessionId: w.sessionId });
+    const route = (m && m.current && m.current.provider) || null;
+    const model = (m && m.current && m.current.model) || null;
+    if (!route || !model) { clearSessionFallback(w); return; }
+    const shadow = await ensureFallbackShadow(route);
+    if (!shadow) { clearSessionFallback(w); return; }
+    await harnessRpc('session.selectModel', { sessionId: w.sessionId, provider: shadow, model }); // 会话级切换：仅影响当前对话窗口
     w.retried = true;
     await harnessRpc('session.prompt', w.payload, FALLBACK_RETRY_PREFIX + Math.random().toString(36).slice(2));
-    console.log(`[DSH Work Buddy] 运行期协议兜底：${route} 首次对话协议错误(${msg.slice(0, 90)})，已临时降级 Completions 重试`);
+    console.log(`[DSH Work Buddy] 运行期协议兜底：${route} 协议错误(${msg.slice(0, 90)})，会话已切影子 ${shadow}（Completions）重试；原 provider 配置未改动`);
   } catch (e) { clearSessionFallback(w); }
 }
 
-// 优雅关闭时恢复全部临时降级（不持久化降级结果；1.5s 内尽力完成，失败不阻塞退出）
-// 仅恢复仍存在的路由：provider 已被删除（如测试清理）时不再重建，避免残留空壳 provider。
-async function restoreProtoOverrides() {
-  for (const [route, { originalApi }] of protoOverrides) {
-    try {
-      const d = await harnessRpc('settings.describe', {});
-      const piNs = (d.namespaces || []).find((n) => n.ns === 'llm-pi-ai');
-      const profile = (piNs && piNs.value && piNs.value.providers && piNs.value.providers[route]) || null;
-      if (!profile) continue; // 路由已不存在 → 无需恢复
-      await harnessRpc('settings.mutate', {
-        ns: 'llm-pi-ai',
-        ops: [{ op: 'set', path: ['providers', route, 'api'], value: originalApi }],
-        expectedRevision: piNs && piNs.revision
-      });
-    } catch (e) { /* 尽力而为 */ }
-  }
-  protoOverrides.clear();
+// 优雅关闭时清理全部降级影子（wb-fb- 前缀路由；1.5s 内尽力完成，失败不阻塞退出）。
+// 不删 credentials——影子复用原 provider 的 apiKeyEnv 引用，密钥本体归原 provider 所有。
+// 崩溃残留由 calibrateProtocolApi 启动时的幂等清理兜底。
+async function removeFallbackShadows() {
+  try {
+    const d = await harnessRpc('settings.describe', {});
+    const piNs = (d.namespaces || []).find((n) => n.ns === 'llm-pi-ai');
+    const providers = (piNs && piNs.value && piNs.value.providers) || {};
+    const shadows = Object.keys(providers).filter((r) => r.startsWith(FALLBACK_SHADOW_PREFIX));
+    if (!shadows.length) return;
+    await harnessRpc('settings.mutate', {
+      ns: 'llm-pi-ai',
+      ops: shadows.map((r) => ({ op: 'unset', path: ['providers', r] })),
+      expectedRevision: piNs && piNs.revision
+    });
+    console.log(`[DSH Work Buddy] 已清理 ${shadows.length} 个降级影子 provider`);
+  } catch (e) { /* 尽力而为 */ }
 }
 
 // 方向 E 启动校准：设置中心协议选择（protocol 字段）与生效协议（api 字段）解耦后，
@@ -1572,6 +1590,18 @@ async function calibrateProtocolApi() {
     await wait(1000);
   }
   if (!piNs || !piNs.value || typeof piNs.value.providers !== 'object') { console.log('[DSH Work Buddy] 启动协议校准放弃：llm-pi-ai 命名空间未就绪'); return; }
+  // 影子清理（崩溃残留自愈，幂等）：unset 全部 wb-fb- 前缀路由。原 provider 未被运行期改动，无需其他恢复。
+  try {
+    const shadows = Object.keys(piNs.value.providers).filter((r) => r.startsWith(FALLBACK_SHADOW_PREFIX));
+    if (shadows.length) {
+      await harnessRpc('settings.mutate', {
+        ns: 'llm-pi-ai',
+        ops: shadows.map((r) => ({ op: 'unset', path: ['providers', r] })),
+        expectedRevision: piNs.revision
+      });
+      console.log(`[DSH Work Buddy] 启动清理：已移除 ${shadows.length} 个崩溃残留的降级影子 provider（${shadows.join(', ')}）`);
+    }
+  } catch (e) { /* 尽力而为：清理失败不阻塞启动 */ }
   let fixed = 0;
   try {
     const provs = piNs.value.providers;
