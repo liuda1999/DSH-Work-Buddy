@@ -1636,6 +1636,11 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 }
 .sw-ctx-compact:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-1px)}
 .sw-ctx-compact:disabled{opacity:.4;cursor:default}
+.sw-ctx-auto{display:flex;align-items:center;gap:6px;margin-top:10px;font-size:11.5px;color:var(--text-4);cursor:pointer;user-select:none}
+.sw-ctx-auto input{accent-color:#16A34A;cursor:pointer}
+.sw-ctx-badge{margin-top:6px;padding:4px 8px;border-radius:6px;font-size:10.5px;line-height:1.4;
+  background:rgba(245,158,11,.12);border:1px dashed rgba(245,158,11,.5);color:#F59E0B;
+  font-family:'JetBrains Mono',monospace}
 .sw-ctx-last{font-size:10px;color:var(--text-5);margin-top:8px;text-align:center;font-family:'JetBrains Mono',monospace}
 /* --- 右栏：会话统计卡（三行统计条，复用 sw-ctx 卡片容器） --- */
 .sw-stat-row{display:flex;justify-content:space-between;align-items:baseline;padding:5px 2px;font-size:12px}
@@ -3608,6 +3613,11 @@ select.form-input option{background:#12161F;color:var(--text-2)}
                 <input type="checkbox" id="scCustomVision" />
                 该 Provider 的模型支持图片输入（多模态）
               </label>
+              <div>
+                <div class="form-label" style="margin-top:12px">真实上下文窗口（可选，Token 数）</div>
+                <input class="form-input" id="scCustomCtx" type="number" min="4096" step="1024" placeholder="如 128000（本地 llama.cpp -c 值 / 模型真实窗口）" />
+                <div class="form-hint" style="font-size:11px;opacity:.6;margin-top:4px">留空则信任服务端上报值。填写的值会用于钳制「上下文剩余空间/自动压缩」阈值，避免本地量化模型（如 128K）被误按 256K 处理。</div>
+              </div>
               <div class="set-actions">
                 <button class="btn btn-primary" id="scCustomSave">保存自定义 Provider</button>
                 <button class="btn btn-ghost" id="scCustomCancelEdit" hidden>取消编辑</button>
@@ -4024,6 +4034,10 @@ select.form-input option{background:#12161F;color:var(--text-2)}
             <div class="sw-ctx-empty">开始对话后统计</div>
           </div>
           <button class="sw-ctx-compact" id="swCtxCompact" disabled>提前压缩上下文</button>
+          <label class="sw-ctx-auto" title="接近真实上下文窗口时自动触发压缩（本地量化模型建议开启）；可随时关闭">
+            <input type="checkbox" id="swCtxAuto" /> 到达阈值自动压缩
+          </label>
+          <div class="sw-ctx-badge" id="swCtxBadge" hidden></div>
         </div>
         <!-- 会话统计卡：缓存命中率 / Token 速度 / 参考费用（session.history 投影轮询，与上下文卡同源） -->
         <div class="sw-ctx" id="swStatsCard">
@@ -6685,6 +6699,7 @@ async function sscSelectModel(prov, model) {
   try {
     const v = await wbRpc('session.selectModel', { sessionId: CHAT.sessionId, provider: prov, model });
     if (CHAT.models) CHAT.models.current = (v && v.selected) || { provider: prov, model };
+    SW.ctxProvCache = null; // 切换模型：清空会话工作台 provider 缓存，上下文卡下轮重新解析 override/窗口
     CHAT.modelClass = isThirdPartyModel(prov) ? 'thirdparty' : 'deepseek';
     // 用户切换模型：重置工具失败计数并隐藏护栏条
     CHAT.toolErrStreak = 0;
@@ -6906,6 +6921,8 @@ async function sscSelectPerm(value) {
 
 // ---------- 斜杠命令菜单（内置命令 + skill.list 会话技能） ----------
 // 内置命令静态中文版（dsh harness 原生命令；与技能重名时优先此表）
+// 2026-08-29 实测：命令经 commands/execute 通道真实执行（/compact 实测压缩 30 条历史 ~30255 tokens）。
+// 注意：session.prompt 直接发 '/xxx' 文本不会触发命令（会当普通消息进模型）——命令必须走上述通道。
 const SSC_CMDS = [
   { name: '/compact', desc: '压缩上下文——把较早的对话历史压缩为摘要，释放上下文窗口空间，让长对话可以继续', hint: '无参数' },
   { name: '/permission', desc: '切换权限级别——控制智能体的文件访问范围与审批策略；无参数时查看当前级别与可用清单', hint: '<预设名>' },
@@ -7261,7 +7278,16 @@ const SW = {
   shpCat: 'all',
   shpKw: '',
   shpRepos: [],             // 仓库元数据（/api/wiki/repos）
-  shpRepoOpen: null         // 展开的仓库 key 集合（key: "category/repoSlug"），默认全部折叠
+  shpRepoOpen: null,        // 展开的仓库 key 集合（key: "category/repoSlug"），默认全部折叠
+  // ---- 上下文压缩：真实窗口覆盖 + 自动触发 ----
+  ctxAuto: false,           // 「到达阈值自动压缩」开关（localStorage 持久化）
+  ctxOverrides: null,       // 自定义 provider 真实上下文窗口映射：{ route: N }（带 TTL 缓存，设置中心修改后自动生效）
+  ctxOverridesAt: 0,        // override 缓存加载时间戳（TTL 用）
+  ctxProvCache: null,       // 当前会话 provider 缓存（避免每 5s 轮询打一次 session.models RPC）
+  ctxAutoTick: 0,           // 当前会话自动触发计数
+  ctxLastAutoAt: 0,         // 上次自动触发的时间戳（防短时间重复）
+  ctxLastAutoUsed: null,    // 上次自动触发时的压力值（projectedTokens 基准，判压缩是否有效）
+  ctxAutoIneffective: 0     // 连续「压缩无效」计数（used 未明显下降 → 超限停用自动触发，防死循环）
 };
 const SW_CATS = [
   { key: 'all', name: '全部', color: '#22C55E' },
@@ -7283,6 +7309,12 @@ function fmtSizeSw(n) {
 function initSessionWorkbench(task) {
   SW.task = task;
   SW.expanded = new Set();
+  // 自动压缩开关：本地持久化偏好（默认关，用户勾选后记忆）
+  SW.ctxAuto = localStorage.getItem('swCtxAuto') === '1';
+  SW.ctxAutoTick = 0; SW.ctxLastAutoAt = 0; SW.ctxLastAutoUsed = null; SW.ctxAutoIneffective = 0;
+  SW.ctxOverrides = null; SW.ctxOverridesAt = 0; SW.ctxProvCache = null;
+  const autoEl = document.getElementById('swCtxAuto');
+  if (autoEl) autoEl.checked = SW.ctxAuto;
   // 身份卡
   renderSwAgentCard();
   // 文件树 + 统计
@@ -7460,6 +7492,33 @@ function renderSwSessionStats(vals) {
 }
 
 // ---------- 右栏：上下文卡片 ----------
+// 自动压缩触发阈值：达到「真实窗口」的 85% 即触发（留安全余量，对冲通用 tokenizer 低估中文/token 的偏差）
+const CTX_AUTO_RATIO = 0.85;
+// 单会话自动触发最小间隔（ms）：配合每 5s 轮询，防止达到阈值后每轮重复发 /compact
+const CTX_AUTO_MIN_INTERVAL = 60000;
+
+// 加载自定义 provider 的真实上下文窗口覆盖（llm-pi-ai.providers[*].contextWindow）
+// 缓存带 TTL：设置中心修改「真实上下文窗口」后，最多 CTX_OVERRIDE_TTL 内自动生效（无需重开任务）
+const CTX_OVERRIDE_TTL = 30000;
+async function getCtxOverrideWin(route) {
+  if (!route) return null;
+  if (SW.ctxOverrides == null || (Date.now() - SW.ctxOverridesAt) > CTX_OVERRIDE_TTL) {
+    SW.ctxOverrides = {};
+    SW.ctxOverridesAt = Date.now();
+    try {
+      const d = await wbRpc('settings.describe', {});
+      const pi = (d.namespaces || []).find((n) => n.ns === 'llm-pi-ai');
+      const provs = (pi && pi.value && pi.value.providers) || {};
+      for (const r of Object.keys(provs)) {
+        const cw = provs[r] && provs[r].contextWindow;
+        if (Number.isFinite(cw) && cw > 0) SW.ctxOverrides[r] = cw;
+      }
+    } catch { /* 智能体未就绪：保持空映射 */ }
+  }
+  const ov = SW.ctxOverrides[route];
+  return (Number.isFinite(ov) && ov > 0) ? ov : null;
+}
+
 async function refreshSwCtx() {
   const task = SW.task;
   if (!task || !task.sessionId || SW.ctxRunning) {
@@ -7468,6 +7527,8 @@ async function refreshSwCtx() {
     return;
   }
   const body = document.getElementById('swCtxBody');
+  const badgeEl = document.getElementById('swCtxBadge');
+  const compactBtn = document.getElementById('swCtxCompact');
   try {
     const v = await wbRpc('session.history', { sessionId: task.sessionId, maxMessages: 1 });
     const proj = v && v.projections && v.projections.values;
@@ -7476,11 +7537,23 @@ async function refreshSwCtx() {
     const cp = proj && proj.contextPressure;
     if (!cp || !cp.contextWindow) {
       body.innerHTML = '<div class="sw-ctx-empty">开始对话后统计</div>';
-      document.getElementById('swCtxCompact').disabled = true;
+      if (badgeEl) badgeEl.hidden = true;
+      compactBtn.disabled = true;
       return;
     }
-    const used = cp.pressureTokens || 0;
-    const win = cp.contextWindow;
+    // 上下文压力基准：优先 projectedTokens（下一轮实际发送的 token，压缩后立即下降），
+    // 回退 pressureTokens（实测压缩生效后 pressureTokens 不变、projectedTokens 大幅下降 35404→6126）
+    const used = cp.projectedTokens || cp.pressureTokens || 0;
+    const harnessWin = cp.contextWindow;
+    // 真实窗口覆盖：优先自定义 provider 配置（本地量化模型如 llama.cpp -c），否则信任服务端上报
+    // provider 缓存：模型切换走 session.selectModel 后页面会重开/刷新，轮询期间不会变，避免每 5s 一次 RPC
+    if (SW.ctxProvCache == null) {
+      try { const m = await wbRpc('session.models', { sessionId: task.sessionId }); SW.ctxProvCache = m && m.current && m.current.provider; } catch { /* 忽略 */ }
+    }
+    const prov = SW.ctxProvCache;
+    const route = prov && prov.startsWith(WB_FB_PREFIX) ? prov.slice(WB_FB_PREFIX.length) : prov;
+    const override = await getCtxOverrideWin(route);
+    const win = override || harnessWin;
     const pct = Math.min(100, Math.round(used / win * 100));
     const color = pct > 85 ? '#EF4444' : pct > 60 ? '#F59E0B' : '#22C55E';
     const R = 34, C = 2 * Math.PI * R;
@@ -7499,30 +7572,79 @@ async function refreshSwCtx() {
         <span>窗口 ${(win / 1000).toFixed(0)}K</span>
       </div>
       <div class="sw-ctx-last">更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}</div>`;
-    document.getElementById('swCtxCompact').disabled = false;
+    // 真实窗口钳制提示（仅当覆盖值较服务端上报更小，即本地模型被高估时显示）
+    if (badgeEl) {
+      if (override && win < harnessWin) { badgeEl.hidden = false; badgeEl.textContent = `已按真实窗口 ${win} 钳制（服务端上报 ${harnessWin}）`; }
+      else badgeEl.hidden = true;
+    }
+    compactBtn.disabled = false;
+    // 自动压缩：达到真实阈值且在自触发窗口内 → 走 commands/execute 通道无确认执行
+    // 死循环防护：若上次触发后 used（projectedTokens 基准）未明显下降（压缩无效，如窗口设置过小/摘要本身大），
+    // 连续 2 次无效则自动停用本会话的自动触发并提示，避免每 60s 永久空转
+    let autoFired = false;
+    if (SW.ctxAuto && !SW.ctxRunning) {
+      const threshold = Math.round(win * CTX_AUTO_RATIO);
+      const now = Date.now();
+      if (used >= threshold && (now - SW.ctxLastAutoAt) > CTX_AUTO_MIN_INTERVAL) {
+        if (SW.ctxLastAutoUsed != null && used > SW.ctxLastAutoUsed * 0.95) {
+          SW.ctxAutoIneffective += 1; // 压缩无效：used 几乎没降
+        } else {
+          SW.ctxAutoIneffective = 0;  // 有效（下降 >5%）或首次触发：清零
+        }
+        if (SW.ctxAutoIneffective >= 2) {
+          SW.ctxAuto = false;
+          localStorage.setItem('swCtxAuto', '0');
+          const autoChk = document.getElementById('swCtxAuto');
+          if (autoChk) autoChk.checked = false;
+          toast('自动压缩已停用：连续两次压缩后上下文未下降（真实窗口可能设置过小，请到设置中心调大）');
+        } else {
+          SW.ctxLastAutoAt = now;
+          SW.ctxLastAutoUsed = used;
+          SW.ctxAutoTick += 1;
+          autoFired = true;
+        }
+      }
+    }
+    if (autoFired) runSwCompact(true); // skipConfirm
   } catch { /* harness 未就绪：静默保持占位 */ }
 }
 
-// 提前压缩上下文（/compact 走 session.prompt 命令通道）
-async function runSwCompact() {
+// ---------- 命令执行通道 ----------
+// 2026-08-29 实测审计结论：
+//   ✗ session.prompt（mode 仅 queue/steer）不解析斜杠命令——'/compact' 文本会被当普通消息发给模型
+//     （实测 pressureTokens 8977→33763，污染上下文，且从不触发 compaction 事件）；
+//   ✓ 正确通道是 commands/execute（与聊天框 chatExecCommand 同一通道）：
+//     wbRpc('commands/execute', { args: { agentId: sessionId, line: '/compact' } })
+//     实测返回 {commandId, result:{kind:'success', text:'Compacted 30 history items (~30255 tokens).'}}，
+//     compaction/start/end 事件齐全。
+//   ✓ 压缩生效后投影 pressureTokens 不变，但 projectedTokens（下一轮实际发送量）大幅下降
+//     （实测 35404→6126）——上下文压力判定基准必须用 projectedTokens。
+async function execSessionCommand(sessionId, line) {
+  // 与 chatExecCommand 相同的载荷；命令不依赖模型路由与附件
+  const v = await wbRpc('commands/execute', { args: { agentId: sessionId, line } });
+  if (v && v.result && v.result.kind === 'error') {
+    throw new Error(v.result.text || '命令执行失败');
+  }
+  return v;
+}
+
+// 提前压缩上下文（走 commands/execute 命令通道；skipConfirm=true 用于自动触发，跳过确认弹窗）
+async function runSwCompact(skipConfirm) {
   const task = SW.task;
   if (!task || !task.sessionId || SW.ctxRunning) return;
-  if (!window.confirm('将把较早的对话历史压缩为摘要，释放上下文空间。压缩不可撤销，继续？')) return;
+  if (!skipConfirm && !window.confirm('将把较早的对话历史压缩为摘要，释放上下文空间。压缩不可撤销，继续？')) return;
   const btn = document.getElementById('swCtxCompact');
   const oldTxt = btn.textContent;
   btn.disabled = true;
   btn.textContent = '压缩中...';
   SW.ctxRunning = true;
   try {
-    await wbRpc('session.prompt', {
-      sessionId: task.sessionId,
-      mode: 'queue',
-      content: [{ type: 'text', text: '/compact' }]
-    });
-    toast('已触发上下文压缩，等待智能体处理…');
+    const v = await execSessionCommand(task.sessionId, '/compact');
+    const txt = (v && v.result && v.result.text) || '';
+    toast((skipConfirm ? `已自动触发上下文压缩（第 ${SW.ctxAutoTick} 次）：` : '上下文压缩完成：') + (txt || '等待智能体处理…'));
     setTimeout(refreshSwCtx, 3000);
   } catch (e) {
-    toast('压缩失败：' + e.message);
+    toast('压缩失败：' + (e.message || e));
   } finally {
     SW.ctxRunning = false;
     btn.textContent = oldTxt;
@@ -7715,8 +7837,13 @@ async function removeSwShelfDoc(relPath) {
     renderSwTree(SW.tree);
   });
   document.getElementById('swFilesRefresh').addEventListener('click', () => loadSwFiles());
-  // 上下文压缩
-  document.getElementById('swCtxCompact').addEventListener('click', () => runSwCompact());
+  // 上下文压缩（手动 + 自动开关）
+  document.getElementById('swCtxCompact').addEventListener('click', () => runSwCompact(false));
+  document.getElementById('swCtxAuto').addEventListener('change', (e) => {
+    SW.ctxAuto = e.target.checked;
+    localStorage.setItem('swCtxAuto', SW.ctxAuto ? '1' : '0');
+    toast(SW.ctxAuto ? '已开启：到达真实上下文阈值时自动压缩' : '已关闭自动压缩');
+  });
   // 书架
   document.getElementById('swShelfAddBtn').addEventListener('click', () => openSwShelfPick());
   document.getElementById('swShelfList').addEventListener('click', e => {
@@ -9339,6 +9466,7 @@ function editCustomProvider(route) {
   document.getElementById('scCustomApi').value = p.protocol || p.api || 'openai-completions';
   document.getElementById('scCustomModels').value = ((p.models || []).map((m) => m.id)).join(', ');
   document.getElementById('scCustomVision').checked = Array.isArray(p.defaultInput) && p.defaultInput.includes('image');
+  document.getElementById('scCustomCtx').value = p.contextWindow != null ? p.contextWindow : '';
   document.getElementById('scCustomKey').value = '';
   document.getElementById('scCustomKey').placeholder = '已配置，输入新值覆盖；留空保留';
   document.getElementById('scCustomAddSummary').textContent = `编辑自定义 Provider：${c.route}`;
@@ -9351,6 +9479,7 @@ function editCustomProvider(route) {
 function cancelEditCustomProvider() {
   ['scCustomRoute', 'scCustomName', 'scCustomBaseURL', 'scCustomKey', 'scCustomModels'].forEach((id) => { document.getElementById(id).value = ''; });
   document.getElementById('scCustomVision').checked = false;
+  document.getElementById('scCustomCtx').value = '';
   document.getElementById('scCustomKey').placeholder = 'sk-...';
   document.getElementById('scCustomAddSummary').textContent = '＋ 添加自定义 Provider';
   document.getElementById('scCustomCancelEdit').hidden = true;
@@ -9396,10 +9525,12 @@ async function discoverCustomModels() {
 // + 空密钥本地端点兜底：不声明 apiKeyEnv（避免 harness resolveApiKey 抛 MISSING_CREDENTIAL），注入占位 Authorization 头
 // 方向 E：protocol 记录用户原始协议选择（含 auto，用于设置中心显示/回显），与生效协议 api 解耦；
 //   运行期降级只改 api，protocol 保持用户选择不变，网关启动时按 protocol 校准 api。
-function buildCustomProviderProfile({ route, displayName, baseURL, api, key, models, vision, keepExistingKey, protocol }) {
+function buildCustomProviderProfile({ route, displayName, baseURL, api, key, models, vision, contextWindow, keepExistingKey, protocol }) {
   const profile = { displayName, baseURL, api };
   if (protocol) profile.protocol = protocol; // 用户原始选择（auto / responses / completions / anthropic），持久化
   if (Array.isArray(models) && models.length) profile.models = models;
+  // 真实上下文窗口：>0 才写入（前端据此钳制上下文显示与自动压缩阈值；本地量化模型如 llama.cpp -c 128000）
+  if (Number.isFinite(contextWindow) && contextWindow > 0) profile.contextWindow = contextWindow;
   // 多模态声明：勾选则声明 provider 级默认输入模态（自定义端点无目录条目，网关据此判定支持图片输入）
   profile.defaultInput = vision ? ['text', 'image'] : ['text'];
   if (key || keepExistingKey) {
@@ -9425,6 +9556,7 @@ async function saveCustomProvider() {
     const api = document.getElementById('scCustomApi').value;
     const key = document.getElementById('scCustomKey').value.trim();
     const modelsRaw = document.getElementById('scCustomModels').value;
+    const ctxRaw = parseInt(document.getElementById('scCustomCtx').value.trim(), 10);
     if (!route) { msg.className = 'set-msg err'; msg.textContent = 'Route ID 不能为空'; return; }
     if (!ROUTE_RE.test(route)) { msg.className = 'set-msg err'; msg.textContent = 'Route ID 需为小写字母数字与中划线（如 openai / my-provider）'; return; }
     if (!baseURL) { msg.className = 'set-msg err'; msg.textContent = 'Base URL 不能为空'; return; }
@@ -9449,7 +9581,7 @@ async function saveCustomProvider() {
     }
 
     const profile = buildCustomProviderProfile({
-      route, displayName, baseURL, api: resolvedApi, key, models, keepExistingKey,
+      route, displayName, baseURL, api: resolvedApi, key, models, contextWindow: ctxRaw, keepExistingKey,
       protocol: api, // 方向 E：持久化用户原始协议选择（含 auto），设置中心回显用
       vision: document.getElementById('scCustomVision').checked,
     });
