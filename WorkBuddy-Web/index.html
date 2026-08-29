@@ -7644,7 +7644,7 @@ async function runSwCompact(skipConfirm) {
   if (!skipConfirm) {
     const ok = await wbConfirm({
       title: '提前压缩上下文',
-      message: '将把较早的对话历史压缩为摘要，释放上下文空间。压缩不可撤销，继续？\n（提示：本地模型生成摘要约需 1~5 分钟，期间请勿关闭任务窗口）',
+      message: '将把较早的对话历史压缩为摘要，释放上下文空间。压缩不可撤销，继续？\n（本地模型生成摘要约需 1~5 分钟；期间可继续对话——新消息会自动排队，压缩完成后依次处理，互不影响。请勿关闭任务窗口，关闭会中止压缩）',
       okText: '开始压缩'
     });
     if (!ok) return;
