@@ -1274,6 +1274,10 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 /* 归档 / 设定新期限弹窗在会话弹层开启时弹出（完成会话 → 文件归档；逾期任务 → 设定新期限），需叠在会话弹层之上 */
 #modal-archive,#modal-renew{z-index:210}
 #modal-agent-pick,#modal-shelf-pick{z-index:230}
+/* 通用确认弹窗必须始终置顶（高于会话弹层 200/选择器 230）：
+   否则在任务会话窗口内触发 wbConfirm（如「提前压缩上下文」确认）会被会话弹层完全遮挡，
+   用户看不见确认框 → 点击按钮后表现为"等待且无后续"（2026-08-29 实测根因） */
+#modal-confirm{z-index:300}
 .session-panel{
   width:92vw;height:88vh;max-width:none;
   display:flex;flex-direction:column;overflow:hidden;
@@ -7629,22 +7633,45 @@ async function execSessionCommand(sessionId, line) {
 }
 
 // 提前压缩上下文（走 commands/execute 命令通道；skipConfirm=true 用于自动触发，跳过确认弹窗）
+// 注意：
+//   1) 确认弹窗必须用 wbConfirm（自研弹窗）——原生 window.confirm 在内嵌/预览环境会被静默屏蔽，
+//      返回 false 导致点击后无任何反应（2026-08-29 实测反馈的"点了没后续"根因之一）。
+//   2) commands/execute 是同步阻塞 RPC：本地量化模型生成摘要需 1~5 分钟，期间 fetch pending。
+//      因此确认后立即给出明确反馈（toast + 按钮文案注明预计耗时），不能只显示"压缩中..."。
 async function runSwCompact(skipConfirm) {
   const task = SW.task;
   if (!task || !task.sessionId || SW.ctxRunning) return;
-  if (!skipConfirm && !window.confirm('将把较早的对话历史压缩为摘要，释放上下文空间。压缩不可撤销，继续？')) return;
+  if (!skipConfirm) {
+    const ok = await wbConfirm({
+      title: '提前压缩上下文',
+      message: '将把较早的对话历史压缩为摘要，释放上下文空间。压缩不可撤销，继续？\n（提示：本地模型生成摘要约需 1~5 分钟，期间请勿关闭任务窗口）',
+      okText: '开始压缩'
+    });
+    if (!ok) return;
+  }
   const btn = document.getElementById('swCtxCompact');
   const oldTxt = btn.textContent;
   btn.disabled = true;
-  btn.textContent = '压缩中...';
+  btn.textContent = '压缩中…(约1-5分钟)';
   SW.ctxRunning = true;
+  // 立即反馈：调用发出后先告知用户已在执行，避免阻塞等待期间"无反应"观感
+  toast(skipConfirm
+    ? `已自动触发上下文压缩（第 ${SW.ctxAutoTick} 次），正在生成摘要（本地模型约需 1~5 分钟）…`
+    : '压缩请求已提交，正在生成摘要（本地模型约需 1~5 分钟），完成后此处会提示');
   try {
     const v = await execSessionCommand(task.sessionId, '/compact');
     const txt = (v && v.result && v.result.text) || '';
-    toast((skipConfirm ? `已自动触发上下文压缩（第 ${SW.ctxAutoTick} 次）：` : '上下文压缩完成：') + (txt || '等待智能体处理…'));
+    toast('上下文压缩完成：' + (txt || '已处理'));
     setTimeout(refreshSwCtx, 3000);
   } catch (e) {
-    toast('压缩失败：' + (e.message || e));
+    const msg = String(e.message || e);
+    if (msg.includes('session-not-found')) {
+      toast('压缩失败：会话未在智能体中加载（可能已重启）。请关闭并重新打开该任务后重试。');
+    } else if (msg.includes('not idle') || msg.includes('active compaction')) {
+      toast('压缩失败：智能体正忙（对话进行中或已有压缩在执行），请稍后再试。');
+    } else {
+      toast('压缩失败：' + msg);
+    }
   } finally {
     SW.ctxRunning = false;
     btn.textContent = oldTxt;
