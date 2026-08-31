@@ -853,7 +853,11 @@ async function taskDirFor(taskId, workspaceId) {
 // （会话隔离与智能体档案落盘的物理边界）
 async function ensureTaskDir(task) {
   if (!task) return;
-  if (task.dir) {
+  // 幽灵目录根因修复：Windows 残留路径（含反斜杠或盘符前缀）不是本机合法任务目录。
+  // 若直接 mkdirSync 会按字面量（如 `E:\worke\...`）在项目根生成伪目录 → 一律忽略并走规范解析。
+  const isStaleWinDir = typeof task.dir === 'string' &&
+    (task.dir.includes('\\') || /^[A-Za-z]:/.test(task.dir));
+  if (task.dir && !isStaleWinDir) {
     if (!fs.existsSync(task.dir)) {
       try { fs.mkdirSync(task.dir, { recursive: true }); } catch (e) { /* 目录创建失败时任务仍可用 */ }
     }
@@ -861,6 +865,29 @@ async function ensureTaskDir(task) {
   }
   task.dir = await taskDirFor(task.id, task.workspaceId);
   try { fs.mkdirSync(task.dir, { recursive: true }); } catch (e) { /* 目录创建失败时任务仍可创建 */ }
+  if (task.id) saveTaskFile(task); // 写回修正后的 dir，清除历史遗留的 Windows 路径
+}
+
+// ---- 任务目录删除的安全判定（防止误删资产 / 幽灵目录） ----
+// 项目资产红线：data/archive 归档目录与曾被当工作区的残留目录（幽灵目录）是重要数据，
+// 绝不能作为垃圾文件被任务/工作区删除逻辑清掉。删除前必须经本判定，命中以下任一即禁止物理删除：
+//   ① 映射到 data/archive 之下 → 归档资产，永不删
+//   ② 含反斜杠 / 盘符前缀的 Windows 残留路径（幽灵目录）→ 非本机合法任务目录，不碰
+//   ③ 规范化后不落在 data/tasks 或 data/workspaces/<工区>/ 之下、或 basename 与任务 id 不符 → 非本任务专属目录，不碰
+// baseDir：任务目录的允许根（传入 data 下工作区任务目录或 tasks 目录）；忽略时用数据根判断。
+function isRemovableTaskDir(task, baseDir) {
+  if (!task || !task.id || !task.dir) return false;
+  // ② Windows 残留幽灵路径：一律不物理删除（even if 存在同名伪目录）
+  if (task.dir.includes('\\') || /^[A-Za-z]:/.test(task.dir)) return false;
+  let d = path.resolve(task.dir);
+  const dn = normPath(d);
+  // ① 归档资产保护：落在 ARCHIVE_DIR（含其参数变体）下绝不删
+  if (dn.startsWith(normPath(ARCHIVE_DIR) + '/')) return false;
+  // ③ 需落在允许的基准根之内，且 basename 与任务 id 严格一致（防误删整组/工作区/归档组）
+  const base = baseDir ? path.resolve(baseDir) : DATA_DIR;
+  if (!dn.startsWith(normPath(base) + '/')) return false;
+  if (path.basename(d) !== task.id) return false;
+  return true;
 }
 
 // ---------- 智能体内置记忆（长期画像，按模板 id 存放于 data/agents/<tplId>/MEMORY.md） ----------
@@ -914,13 +941,16 @@ function PROJECT_GUIDE_MD(wikiDir, taskDir) {
 
 ### 资源仓库
 - 资源仓库 = 本项目的 Wiki 文档库（是文档集合概念，不是本地文件夹！）。
-- 用户说「保存到资源仓库」= 创建一份带元数据的 markdown 文档写入 ${wikiDir}（绝对路径）。
+- 用户说「保存到资源仓库」= 创建一份带元数据的 markdown 文档写入 ${wikiDir}（default 仓库根目录；命名仓库按下方 slug 规则，经 POST /api/wiki/write 归仓）。
 - 文档规范：frontmatter 三要素 title（名称）/ description（简介）/ tags（数组，至少 3 个标签），frontmatter 之后是正文。
 - 禁止把「资源仓库」理解为在磁盘新建目录。
+- 命名仓库场景：目标仓库按 slug 归仓——内置「本地文档库」(default) 恒在，用户仓库见 data/wiki/repos.json（如 repo-1/SKILL文档）；写入规则：default 存 data/wiki 根目录，命名仓库存 data/wiki/<slug>/。
+- 分类限定枚举：material / note / agent-doc / experience / archive；归仓走网关接口 POST /api/wiki/write（body: title/description/tags 至少3个/category/repo/content），勿绕开接口直接新建目录。
 
 ### 检索约定
 - 本地 wiki 检索一律使用 wiki_search.py --no-embed（纯词法 BM25，零依赖零模型）。
 - 未经用户明确要求：禁止运行 init_wiki.py / setup_wiki.py、禁止 pip/uv/npm 安装任何依赖、禁止下载嵌入模型（本地未配置 FastEmbed 模型，混合检索不可用）。
+- 技能优先级裁决：llm-wiki 技能的 init_wiki/setup_wiki 引导、wiki/ + raw/ 目录布局、SCHEMA.md/index.md 结构在本项目不适用；「资源仓库」一律以本项目 wiki 约定（本指南 + data/wiki/.mode + 网关 /api/wiki/* 接口）为准。技能仅可借用其检索脚本 wiki_search.py（--no-embed）。
 
 ### 任务文件夹
 - ${taskDir}（绝对路径）是当前任务专属文件夹。
@@ -1993,7 +2023,9 @@ async function handleLocalApi(req, res, urlPath, params) {
     }
     return sendJson(res, 200, { workspaceId: id, files: workspaceFiles(root) });
   }
-  // 删除工作区：仅解除 dsh 注册（磁盘目录与文件保留，与 dsh 语义一致）
+  // 删除工作区：仅解除 dsh 注册（磁盘目录与文件保留，与 dsh 语义一致）。
+  // 红线声明：工作区目录及其下的文件/归档内容是重要项目资产，本操作永不物理删除磁盘数据；
+  // 曾作为工作区的残留目录（幽灵目录）亦绝不触碰——清理工作区≠清理磁盘资产。
   if (urlPath.startsWith('/api/workspaces/') && req.method === 'DELETE') {
     const id = urlPath.split('/').pop();
     try {
@@ -2218,10 +2250,14 @@ async function handleLocalApi(req, res, urlPath, params) {
     const id = urlPath.split('/')[3];
     const task = db.tasks.find((t) => t.id === id);
     db.tasks = db.tasks.filter((t) => t.id !== id);
-    // 删除任务时同步删除整个任务目录（task.json / AGENTS.md / 会话产物一并清理）；
-    // data/archive 中的归档目录独立保留，不受任务删除影响
-    if (task && task.dir) {
+    // 删除任务仅物理清理本任务的专属目录（task.json / AGENTS.md / 会话产物）；
+    // 但归档资产与幽灵目录是不可触碰的红线：data/archive 下的归档目录、以及含反斜杠/盘符的
+    // Windows 残留目录，一律不删除（见 isRemovableTaskDir）。若 dir 无法通过安全判定则跳过物理删除，
+    // 仅从注册表摘除任务——即使磁盘留有目录，也绝不当作垃圾文件清掉。
+    if (task && task.dir && isRemovableTaskDir(task)) {
       try { fs.rmSync(task.dir, { recursive: true, force: true }); } catch (e) { console.warn('[DSH Work Buddy] 删除任务目录失败：', e.message); }
+    } else if (task && task.dir) {
+      console.warn('[DSH Work Buddy] 删除任务跳过物理清理（非本任务专属目录/归档资产/幽灵目录）：', task.id, task.dir);
     }
     return sendJson(res, 200, { success: true });
   }
