@@ -85,7 +85,20 @@ function normPath(p) {
   return String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 // 判断 dsh 工作区是否为任务专属目录（会话隔离用，不在「我的工作区」侧边栏显示）
-const isTaskWorkspace = (p) => normPath(p).startsWith(normPath(TASK_DATA_DIR) + '/');
+// 两类命中（2026-09-05 修复「神秘工作区」）：
+//   ① data/tasks/<taskId> 之下的目录（旧式布局）；
+//   ② data/workspaces/<工作区>/<taskId> 嵌套布局——taskDirFor 会把任务目录建在工作区目录下，
+//      且 ensureHarnessSession 对每个任务目录调 workspace.create 注册，basename 呈机器任务 ID 形态
+//      （/^t_<13位时间戳>_<5位随机>$/），用户手建工作区不会命中该模式。
+const TASK_ID_RE = /^t_\d{10,}_[a-z0-9]{4,}$/;
+const isTaskWorkspace = (p) => {
+  // 先 resolve 再归一：防 `data/workspaces/../archive/...` 类含 .. 的路径误判（审计加固 2026-09-05）
+  const np = normPath(path.resolve(p));
+  if (np.startsWith(normPath(TASK_DATA_DIR) + '/')) return true;
+  if (!np.startsWith(normPath(WS_DATA_DIR) + '/')) return false;
+  const base = np.slice(np.lastIndexOf('/') + 1);
+  return TASK_ID_RE.test(base);
+};
 
 // dsh WorkspaceView → 前端工作区对象
 function mapWorkspace(w) {
@@ -206,6 +219,110 @@ function ensureSkills() {
   } catch (e) {
     console.warn(`[DSH Work Buddy] 技能安装失败：${e.message}`);
   }
+}
+
+// ---------- 技能安装与待安装扫描（2026-09-05：修复「学习技能后技能页不可见」） ----------
+// dsh 技能扫描根固定为 <项目根>/.dsh/skills/<name>/SKILL.md（skill-filesystem roots() 的 project-dsh 根），
+// 任务目录里的 SKILL.md 不在任何扫描根 → 智能体学习后必须经网关安装到共享根才可见/可调用。
+const SKILL_INSTALL_ROOT = path.resolve(__dirname, '..', '.dsh', 'skills'); // 与 llm-wiki 同根
+const SKILL_INSTALL_MAX_BYTES = 32 * 1024 * 1024; // 单技能目录体积上限（剔除跳过目录后）
+const SKILL_SCAN_SKIP = new Set(['.git', '.trae', 'node_modules', '.dsh']); // 复制/扫描剔除项
+const SKILL_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+// 技能名净化：frontmatter name 优先，退回目录名；非法字符转连字符，不合法返回 null
+function sanitizeSkillName(raw) {
+  const n = String(raw || '').trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9._-]/g, '');
+  return SKILL_NAME_RE.test(n) ? n : null;
+}
+function skillNameFrom(dir, skillMdPath) {
+  try {
+    const head = fs.readFileSync(skillMdPath, 'utf8').slice(0, 4000);
+    const fm = head.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    if (fm) {
+      const nm = fm[1].match(/^name:\s*(.+)$/m);
+      if (nm) { const n = sanitizeSkillName(nm[1]); if (n) return n; }
+    }
+  } catch (e) { /* 读失败退回目录名 */ }
+  return sanitizeSkillName(path.basename(dir));
+}
+
+// 扫描 data/workspaces 与 data/tasks 下「未安装」的技能目录（限深限流；命中技能目录后不再深入）
+// installedNames：已安装技能名集合（harness skill.list 结果），同名跳过
+function scanPendingSkills(installedNames) {
+  const out = [];
+  const seen = new Set();
+  const walk = (dir, depth) => {
+    if (out.length >= 30 || depth > 6) return;
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of entries) {
+      if (out.length >= 30) return;
+      if (SKILL_SCAN_SKIP.has(e.name)) continue;
+      const p = path.join(dir, e.name);
+      if (!e.isDirectory()) continue;
+      const skillMd = path.join(p, 'SKILL.md');
+      try {
+        if (fs.existsSync(skillMd) && fs.statSync(skillMd).isFile()) {
+          const name = skillNameFrom(p, skillMd);
+          if (name && !installedNames.has(name) && !seen.has(name)) {
+            seen.add(name);
+            out.push({ name, sourcePath: p });
+          }
+          continue; // 技能目录内部不再扫描
+        }
+      } catch (e2) { /* 状态异常则继续走子目录 */ }
+      walk(p, depth + 1);
+    }
+  };
+  walk(WS_DATA_DIR, 0);
+  walk(TASK_DATA_DIR, 0);
+  return out;
+}
+
+// 安装技能：sourceDir（含 SKILL.md，必须位于 data/ 内）→ <项目根>/.dsh/skills/<name>/（覆盖式幂等）
+// 返回 { name, path, bytes } 或抛错（错误信息可直接回给调用方）
+function installSkillFrom(sourceDir, rawName) {
+  const srcDir = path.resolve(sourceDir);
+  if (!normPath(srcDir).startsWith(normPath(DATA_DIR) + '/')) {
+    throw new Error('技能源目录必须在 data/ 数据目录内（任务/工作区目录）');
+  }
+  const skillMd = path.join(srcDir, 'SKILL.md');
+  if (!fs.existsSync(skillMd) || !fs.statSync(skillMd).isFile()) {
+    throw new Error('源目录不含 SKILL.md（需要「含 SKILL.md 的技能目录」）');
+  }
+  const name = (rawName ? sanitizeSkillName(rawName) : null) || skillNameFrom(srcDir, skillMd);
+  if (!name) throw new Error('技能名不合法（仅允许字母/数字/._-，且以字母数字开头）');
+  const dst = path.join(SKILL_INSTALL_ROOT, name);
+  if (!normPath(dst).startsWith(normPath(SKILL_INSTALL_ROOT) + '/')) {
+    throw new Error('目标路径越界（技能名含路径分隔符）'); // 防御：sanitized name 已排除，双保险
+  }
+  let bytes = 0;
+  const copyDir = (from, to) => {
+    fs.mkdirSync(to, { recursive: true });
+    for (const e of fs.readdirSync(from, { withFileTypes: true })) {
+      if (SKILL_SCAN_SKIP.has(e.name)) continue;
+      const fp = path.join(from, e.name), tp = path.join(to, e.name);
+      if (e.isDirectory()) copyDir(fp, tp);
+      else {
+        const sz = fs.statSync(fp).size;
+        if (bytes + sz > SKILL_INSTALL_MAX_BYTES) {
+          throw new Error(`技能目录体积超上限（${Math.round(SKILL_INSTALL_MAX_BYTES / 1024 / 1024)}MB，剔除 .git/node_modules/.trae 后计）`);
+        }
+        bytes += sz;
+        fs.copyFileSync(fp, tp);
+      }
+    }
+  };
+  // 同名重装覆盖：删除守卫红线——仅允许覆盖删除「确实是已安装技能（自身含 SKILL.md）」的目标目录；
+  // 目标存在但不是技能目录（异常残留/用户数据）则拒绝删除，改为报错。
+  if (fs.existsSync(dst)) {
+    if (!fs.existsSync(path.join(dst, 'SKILL.md'))) {
+      throw new Error('目标位置已存在同名非技能目录，拒绝覆盖（请检查 .dsh/skills/' + name + '）');
+    }
+    fs.rmSync(dst, { recursive: true, force: true });
+  }
+  copyDir(srcDir, dst);
+  return { name, path: dst, bytes };
 }
 
 // ---------- 通用兼容模式 preset（Web 扩展组件，harness 用户 preset 根） ----------
@@ -951,6 +1068,14 @@ function PROJECT_GUIDE_MD(wikiDir, taskDir) {
 - 本地 wiki 检索一律使用 wiki_search.py --no-embed（纯词法 BM25，零依赖零模型）。
 - 未经用户明确要求：禁止运行 init_wiki.py / setup_wiki.py、禁止 pip/uv/npm 安装任何依赖、禁止下载嵌入模型（本地未配置 FastEmbed 模型，混合检索不可用）。
 - 技能优先级裁决：llm-wiki 技能的 init_wiki/setup_wiki 引导、wiki/ + raw/ 目录布局、SCHEMA.md/index.md 结构在本项目不适用；「资源仓库」一律以本项目 wiki 约定（本指南 + data/wiki/.mode + 网关 /api/wiki/* 接口）为准。技能仅可借用其检索脚本 wiki_search.py（--no-embed）。
+
+### 技能学习与安装（SKILL）
+- dsh 技能扫描根固定为 <项目根>/.dsh/skills/<技能名>/SKILL.md（另有用户级 ~/.dsh/skills 等）。
+- **放在任务目录里的 SKILL.md 不会被识别为技能**（既不出现在技能页，也不能用 /技能名 调用）——学习/获得新技能后必须安装到扫描根。
+- 任务沙箱（workspace-write）不允许直接写项目根 → 安装必须走 wb 网关接口（智能体可用 bash+curl 调用）：
+  curl -s -X POST http://127.0.0.1:8765/api/resources/skills/install -H 'Content-Type: application/json' -d '{"sourcePath":"<技能目录绝对路径（含 SKILL.md 的目录）>"}'
+- 接口会校验源路径在 data/ 内、复制技能目录（剔除 .git/node_modules/.trae、限制体积）到 <项目根>/.dsh/skills/<技能名>/；成功后技能页与 /技能名 斜杠命令立即可用。
+- 下载/克隆的技能项目：先放入任务目录研读，确认可用后立即调用上述接口安装，再向用户报告「已安装」。
 
 ### 任务文件夹
 - ${taskDir}（绝对路径）是当前任务专属文件夹。
@@ -2762,10 +2887,11 @@ function findArchiveSessionDir(groupName, taskId) {
     return sendJson(res, 501, { error: { code: 'not-implemented', message: '插件启停功能尚未实现' } });
   }
   // 技能 Tab：对接 dsh skill.list（按目录会话的项目根解析，懒建 + 固定 sessionId 幂等）
+  // 2026-09-05：附带 pending（任务/工作区目录中已学习但未安装到 .dsh/skills 共享根的技能，供一键安装）
   if (urlPath === '/api/resources/skills' && req.method === 'GET') {
     try {
       const sessionId = await getCatalogSession();
-      if (!sessionId) return sendJson(res, 200, { skills: [], source: 'unavailable' });
+      if (!sessionId) return sendJson(res, 200, { skills: [], pending: [], source: 'unavailable' });
       const v = await harnessRpc('skill.list', { sessionId });
       const skills = (v.skills || []).map((s) => ({
         id: s.name,
@@ -2774,9 +2900,36 @@ function findArchiveSessionDir(groupName, taskId) {
         whenToUse: s.whenToUse || '',
         modelInvocable: s.modelInvocable !== false
       }));
-      return sendJson(res, 200, { skills, source: 'harness' });
+      let pending = [];
+      try { pending = scanPendingSkills(new Set(skills.map((s) => s.name))); } catch (e) { /* 扫描失败不影响列表 */ }
+      return sendJson(res, 200, { skills, pending, source: 'harness' });
     } catch (e) {
-      return sendJson(res, 200, { skills: [], source: 'unavailable' });
+      return sendJson(res, 200, { skills: [], pending: [], source: 'unavailable' });
+    }
+  }
+  // 技能安装（智能体学习后落共享根）：sourcePath 支持技能目录或 SKILL.md 文件路径；源必须位于 data/ 内
+  // 安全边界：仅复制到 <项目根>/.dsh/skills/<name>/；体积上限；覆盖仅限既有技能目录（删除守卫红线）
+  if (urlPath === '/api/resources/skills/install' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      let src = String((body && body.sourcePath) || '').trim();
+      if (!src) return sendJson(res, 400, { error: { message: '缺少 sourcePath（含 SKILL.md 的技能目录，或 SKILL.md 文件路径）' } });
+      try {
+        const st = fs.statSync(src);
+        if (st.isFile()) {
+          if (path.basename(src).toLowerCase() !== 'skill.md') {
+            return sendJson(res, 400, { error: { message: 'sourcePath 需为技能目录或 SKILL.md 文件路径' } });
+          }
+          src = path.dirname(src);
+        }
+      } catch (e) {
+        return sendJson(res, 400, { error: { message: 'sourcePath 不存在：' + src } });
+      }
+      const r = installSkillFrom(src, body && body.name);
+      console.log(`[DSH Work Buddy] 技能安装成功：${r.name}（${Math.round(r.bytes / 1024)}KB）← ${src}`);
+      return sendJson(res, 200, { success: true, name: r.name, path: r.path, bytes: r.bytes });
+    } catch (e) {
+      return sendJson(res, 400, { error: { message: '技能安装失败：' + e.message } });
     }
   }
   if (urlPath === '/api/resources/skills/toggle' && req.method === 'POST') {
@@ -2943,6 +3096,40 @@ const server = http.createServer(async (req, res) => {
   // Wiki 文档库（llm-wiki 构建产物静态托管；须在智能体代理前拦截，否则会被转发到 dsh SPA）
   if (urlPath === '/llm-wiki-plugin' || urlPath.startsWith('/llm-wiki-plugin/')) {
     return serveWiki(urlPath, res, req);
+  }
+
+  // 命令通道观测（2026-09-05）：commands/execute 记一行访问日志（agentId/命令/结果）。
+  // 背景：用户反馈「点了压缩没反应」但服务端零痕迹——透传无日志导致无法定位失败层；
+  // 此拦截只记日志，转发语义与 proxyHttp 完全一致（原样 body 转发、原样回传）。
+  if (urlPath === '/api/commands/execute' && req.method === 'POST') {
+    const env = await readBody(req);
+    const rawJson = JSON.stringify(env);
+    const args = (env && env.payload && env.payload.args) || {};
+    const t0 = Date.now();
+    const preq = http.request({
+      host: HARNESS_HOST, port: HARNESS_PORT, path: '/api/commands/execute', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(rawJson) }
+    }, (pres) => {
+      let d = '';
+      pres.on('data', (c) => (d += c));
+      pres.on('end', () => {
+        try {
+          const r = JSON.parse(d);
+          const cr = r && r.result && r.result.value && r.result.value.result;
+          console.log(`[DSH Work Buddy] command ${args.line || '?'} agent=${args.agentId || '?'} ` +
+            `→ ${cr ? (cr.kind + ': ' + String(cr.text || '').slice(0, 120)) : 'http ' + pres.statusCode}（${Date.now() - t0}ms）`);
+        } catch (e) { /* 日志失败不影响回传 */ }
+        if (!res.headersSent) res.writeHead(pres.statusCode, pres.headers);
+        res.end(d);
+      });
+    });
+    preq.on('error', () => {
+      reviveHarness();
+      if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: { code: 'harness-offline', message: 'dsh 智能体服务未就绪' } }));
+    });
+    preq.end(rawJson);
+    return;
   }
 
   // 运行期协议兜底：拦截 session.prompt —— 读取 envelope（供失败重试原样重发），转发后观察首次对话结果

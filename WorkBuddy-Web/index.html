@@ -7284,7 +7284,7 @@ const SW = {
   shpRepos: [],             // 仓库元数据（/api/wiki/repos）
   shpRepoOpen: null,        // 展开的仓库 key 集合（key: "category/repoSlug"），默认全部折叠
   // ---- 上下文压缩：真实窗口覆盖 + 自动触发 ----
-  ctxAuto: false,           // 「到达阈值自动压缩」开关（localStorage 持久化）
+  ctxAuto: true,            // 「到达阈值自动压缩」开关（localStorage 持久化；2026-09-05 起默认开启，显式存 '0' 才关闭）
   ctxOverrides: null,       // 自定义 provider 真实上下文窗口映射：{ route: N }（带 TTL 缓存，设置中心修改后自动生效）
   ctxOverridesAt: 0,        // override 缓存加载时间戳（TTL 用）
   ctxProvCache: null,       // 当前会话 provider 缓存（避免每 5s 轮询打一次 session.models RPC）
@@ -7313,8 +7313,8 @@ function fmtSizeSw(n) {
 function initSessionWorkbench(task) {
   SW.task = task;
   SW.expanded = new Set();
-  // 自动压缩开关：本地持久化偏好（默认关，用户勾选后记忆）
-  SW.ctxAuto = localStorage.getItem('swCtxAuto') === '1';
+  // 自动压缩开关：本地持久化偏好（2026-09-05 起默认开启；用户取消勾选后记忆为关）
+  SW.ctxAuto = localStorage.getItem('swCtxAuto') !== '0';
   SW.ctxAutoTick = 0; SW.ctxLastAutoAt = 0; SW.ctxLastAutoUsed = null; SW.ctxAutoIneffective = 0;
   SW.ctxOverrides = null; SW.ctxOverridesAt = 0; SW.ctxProvCache = null;
   const autoEl = document.getElementById('swCtxAuto');
@@ -7496,8 +7496,10 @@ function renderSwSessionStats(vals) {
 }
 
 // ---------- 右栏：上下文卡片 ----------
-// 自动压缩触发阈值：达到「真实窗口」的 85% 即触发（留安全余量，对冲通用 tokenizer 低估中文/token 的偏差）
-const CTX_AUTO_RATIO = 0.85;
+// 自动压缩触发阈值（真实窗口占比）。2026-09-05 由 0.85 下调至 0.70：
+// 压缩摘要请求需装下「全部被压缩历史」——本地 qwen 实际窗口 128K（llama.cpp -c 131072）下，
+// 0.85 时触发（~109K）摘要请求几乎必超限失败（llama.cpp 截断/摘要无效）；0.70（~92K）留足摘要余量。
+const CTX_AUTO_RATIO = 0.70;
 // 单会话自动触发最小间隔（ms）：配合每 5s 轮询，防止达到阈值后每轮重复发 /compact
 const CTX_AUTO_MIN_INTERVAL = 60000;
 
@@ -7548,6 +7550,7 @@ async function refreshSwCtx() {
     // 上下文压力基准：优先 projectedTokens（下一轮实际发送的 token，压缩后立即下降），
     // 回退 pressureTokens（实测压缩生效后 pressureTokens 不变、projectedTokens 大幅下降 35404→6126）
     const used = cp.projectedTokens || cp.pressureTokens || 0;
+    SW.ctxLastShownUsed = used; // 记录当前已用（runSwCompact 成功提示对比用）
     const harnessWin = cp.contextWindow;
     // 真实窗口覆盖：优先自定义 provider 配置（本地量化模型如 llama.cpp -c），否则信任服务端上报
     // provider 缓存：模型切换走 session.selectModel 后页面会重开/刷新，轮询期间不会变，避免每 5s 一次 RPC
@@ -7659,16 +7662,36 @@ async function runSwCompact(skipConfirm) {
     ? `已自动触发上下文压缩（第 ${SW.ctxAutoTick} 次），正在生成摘要（本地模型约需 1~5 分钟）…`
     : '压缩请求已提交，正在生成摘要（本地模型约需 1~5 分钟），完成后此处会提示');
   try {
+    const usedBefore = SW.ctxLastShownUsed || null; // 供成功提示对比（refreshSwCtx 维护）
     const v = await execSessionCommand(task.sessionId, '/compact');
     const txt = (v && v.result && v.result.text) || '';
-    toast('上下文压缩完成：' + (txt || '已处理'));
+    // 成功：解析 "Compacted N history items (~M tokens)" 给出直观反馈
+    const m = txt.match(/Compacted\s+(\d+)\s+history items\s+\(~([\d,]+)\s+tokens\)/i);
+    if (m) {
+      const freed = usedBefore ? `，压缩前已用约 ${Math.round(usedBefore / 1000)}K` : '';
+      toast(`上下文压缩完成：已压缩 ${m[1]} 条历史（约 ${m[2]} tokens${freed}）`);
+    } else {
+      toast('上下文压缩完成：' + (txt || '已处理'));
+    }
     setTimeout(refreshSwCtx, 3000);
   } catch (e) {
     const msg = String(e.message || e);
     if (msg.includes('session-not-found')) {
       toast('压缩失败：会话未在智能体中加载（可能已重启）。请关闭并重新打开该任务后重试。');
-    } else if (msg.includes('not idle') || msg.includes('active compaction')) {
-      toast('压缩失败：智能体正忙（对话进行中或已有压缩在执行），请稍后再试。');
+    } else if (msg.includes('useful summary')) {
+      // harness 'summary' 失败：摘要请求装不下/摘要无效——本地小窗口模型的典型结构性失败
+      toast('压缩失败：摘要生成失败（上下文已接近本地模型硬上限，摘要请求装不下全部历史）。' +
+        '建议：① 保持「到达阈值自动压缩」开启（70% 提前触发，此时摘要可正常生成）；② 或新开任务继续，本任务历史仍可在原窗口查看。');
+    } else if (msg.includes('not idle') || msg.includes('active compaction') || msg.includes('busy')) {
+      // 智能体非空闲（回合收尾/标题生成/已有压缩）：命令被拒≠压缩无效——
+      // 重置无效计数基准，避免自动压缩被「连续两次无效」保护误停用；按 60s 间隔自动重试
+      SW.ctxLastAutoUsed = null;
+      SW.ctxAutoIneffective = 0;
+      toast(skipConfirm
+        ? '智能体正忙，本次自动压缩未执行（将在空闲后自动重试）'
+        : '压缩失败：智能体正忙（对话进行中或已有压缩在执行），请等本轮回复结束后再试。');
+    } else if (msg.includes('changed')) {
+      toast('压缩失败：压缩期间有新消息进入，历史已变化（对话未受影响）。请在会话空闲时重试。');
     } else {
       toast('压缩失败：' + msg);
     }
@@ -8981,6 +9004,7 @@ const RS = {
   plugins: [],             // 插件清单（/api/resources/plugins，dsh 运行时插件 {id,name,description,source}）
   pluginsSource: null,     // harness | unavailable
   skills: [],              // 技能清单（/api/resources/skills，dsh skill.list 实时数据）
+  skillsPending: [],       // 待安装技能（任务/工作区目录中已学习但未装入 .dsh/skills 共享根的技能）
   skillsSource: null,      // harness | unavailable
   templates: [],           // 智能体模板（/api/resources/agent-templates）
   docs: [],                // Wiki 文档（/api/wiki/docs，含 category + repoSlug）
@@ -9019,9 +9043,11 @@ async function loadRsSkills() {
     const data = await fetchJson('/api/resources/skills');
     RS.skills = Array.isArray(data.skills) ? data.skills : [];
     RS.skillsSource = data.source || 'harness';
+    RS.skillsPending = Array.isArray(data.pending) ? data.pending : []; // 任务/工作区目录中已学习未安装的技能
   } catch (e) {
     RS.skills = [];
     RS.skillsSource = 'unavailable';
+    RS.skillsPending = [];
   }
   document.getElementById('rsSkillsBadge').textContent = String(RS.skills.length);
 }
@@ -10130,13 +10156,30 @@ function renderRsSkillsPane() {
       </div>`;
     return;
   }
+  // 待安装技能（任务目录中已学习但未装入 .dsh/skills 共享根）：提示 + 一键安装
+  const pendingHtml = (RS.skillsPending && RS.skillsPending.length) ? `
+    <div class="rs-pane-head" style="margin-top:18px">
+      <span class="rs-pane-note">待安装技能（智能体在任务目录中学习、尚未装入共享根 .dsh/skills）· 安装后技能页与 /技能名 命令立即可用</span>
+    </div>
+    <div class="rs-cards">${RS.skillsPending.map(s => `
+    <div class="rs-card">
+      <div class="rs-card-head">
+        <div class="rs-card-title">${esc(s.name)}</div>
+        <span class="rs-badge">待安装</span>
+      </div>
+      <div class="rs-card-id">/${esc(s.name)}</div>
+      <div class="rs-card-desc" style="word-break:break-all">${esc(s.sourcePath)}</div>
+      <div class="rs-card-actions" style="margin-top:10px">
+        <button class="tbtn" data-act="install-skill" data-path="${esc(s.sourcePath)}">安装到共享根</button>
+      </div>
+    </div>`).join('')}</div>` : '';
   if (!RS.skills.length) {
     pane.innerHTML = `
       <div class="rs-empty">
         <div class="rs-empty-title">暂无技能</div>
         <div class="rs-empty-sub">当前数据根目录（data/）下未发现 dsh 技能（SKILL.md）。可先注入 llm-wiki 说明文档到各工作区，供会话内智能体通过 curl 调用知识库。</div>
         <button class="btn btn-primary" id="rsInjectBtn" style="margin-top:14px">注入智能体说明文档</button>
-      </div>`;
+      </div>${pendingHtml}`;
     return;
   }
   pane.innerHTML = `<div class="rs-pane-head">
@@ -10151,7 +10194,26 @@ function renderRsSkillsPane() {
       <div class="rs-card-id">/${esc(s.name)}</div>
       <div class="rs-card-desc">${esc(s.description || '（暂无描述）')}</div>
       ${s.whenToUse ? `<div class="rs-card-desc" style="color:var(--text-4)">适用：${esc(s.whenToUse)}</div>` : ''}
-    </div>`).join('')}</div>`;
+    </div>`).join('')}</div>${pendingHtml}`;
+}
+
+// 一键安装待装技能 → POST /api/resources/skills/install（成功后刷新技能页）
+async function rsInstallSkill(btn) {
+  const src = btn.getAttribute('data-path');
+  if (!src) return;
+  btn.disabled = true; btn.textContent = '安装中...';
+  try {
+    const data = await fetchJson('/api/resources/skills/install', {
+      method: 'POST',
+      body: JSON.stringify({ sourcePath: src })
+    });
+    toast(`技能安装成功：${data.name}（${Math.round((data.bytes || 0) / 1024)}KB）已装入 .dsh/skills/${data.name}`);
+    await loadRsSkills();
+    renderRsSkillsPane();
+  } catch (e) {
+    toast('技能安装失败：' + e.message);
+    btn.disabled = false; btn.textContent = '安装到共享根';
+  }
 }
 
 // 「注入智能体说明文档」→ POST /api/wiki/inject-agent-docs（幂等）
@@ -10962,6 +11024,8 @@ document.getElementById('rsWikiHitList').addEventListener('click', e => {
 // 技能 Tab 事件委托：「注入智能体说明文档」按钮（空态时渲染）
 document.getElementById('rsPaneSkills').addEventListener('click', e => {
   if (e.target.closest('#rsInjectBtn')) rsInjectAgentDocs();
+  const insBtn = e.target.closest('[data-act="install-skill"]');
+  if (insBtn) rsInstallSkill(insBtn);
 });
 
 // ======================================================================
