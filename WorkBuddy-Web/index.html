@@ -1640,8 +1640,7 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 }
 .sw-ctx-compact:hover:not(:disabled){filter:brightness(1.08);transform:translateY(-1px)}
 .sw-ctx-compact:disabled{opacity:.4;cursor:default}
-.sw-ctx-auto{display:flex;align-items:center;gap:6px;margin-top:10px;font-size:11.5px;color:var(--text-4);cursor:pointer;user-select:none}
-.sw-ctx-auto input{accent-color:#16A34A;cursor:pointer}
+.sw-ctx-auto{display:flex;align-items:center;gap:6px;margin-top:10px;font-size:11.5px;color:var(--text-4);user-select:none}
 .sw-ctx-badge{margin-top:6px;padding:4px 8px;border-radius:6px;font-size:10.5px;line-height:1.4;
   background:rgba(245,158,11,.12);border:1px dashed rgba(245,158,11,.5);color:#F59E0B;
   font-family:'JetBrains Mono',monospace}
@@ -4038,9 +4037,9 @@ select.form-input option{background:#12161F;color:var(--text-2)}
             <div class="sw-ctx-empty">开始对话后统计</div>
           </div>
           <button class="sw-ctx-compact" id="swCtxCompact" disabled>提前压缩上下文</button>
-          <label class="sw-ctx-auto" title="接近真实上下文窗口时自动触发压缩（本地量化模型建议开启）；可随时关闭">
-            <input type="checkbox" id="swCtxAuto" /> 到达阈值自动压缩
-          </label>
+          <div class="sw-ctx-auto" title="智能体内置自动压缩：达到窗口约 80% 时在步间自动把较早历史压缩为摘要，无需手动干预；上方按钮可提前手动压缩">
+            智能体到达阈值自动压缩（内置）
+          </div>
           <div class="sw-ctx-badge" id="swCtxBadge" hidden></div>
         </div>
         <!-- 会话统计卡：缓存命中率 / Token 速度 / 参考费用（session.history 投影轮询，与上下文卡同源） -->
@@ -7283,15 +7282,10 @@ const SW = {
   shpKw: '',
   shpRepos: [],             // 仓库元数据（/api/wiki/repos）
   shpRepoOpen: null,        // 展开的仓库 key 集合（key: "category/repoSlug"），默认全部折叠
-  // ---- 上下文压缩：真实窗口覆盖 + 自动触发 ----
-  ctxAuto: true,            // 「到达阈值自动压缩」开关（localStorage 持久化；2026-09-05 起默认开启，显式存 '0' 才关闭）
+  // ---- 上下文压缩：真实窗口覆盖（自动压缩由智能体内置 agent/pre-step 压力触发，wb 不另设触发）----
   ctxOverrides: null,       // 自定义 provider 真实上下文窗口映射：{ route: N }（带 TTL 缓存，设置中心修改后自动生效）
   ctxOverridesAt: 0,        // override 缓存加载时间戳（TTL 用）
-  ctxProvCache: null,       // 当前会话 provider 缓存（避免每 5s 轮询打一次 session.models RPC）
-  ctxAutoTick: 0,           // 当前会话自动触发计数
-  ctxLastAutoAt: 0,         // 上次自动触发的时间戳（防短时间重复）
-  ctxLastAutoUsed: null,    // 上次自动触发时的压力值（projectedTokens 基准，判压缩是否有效）
-  ctxAutoIneffective: 0     // 连续「压缩无效」计数（used 未明显下降 → 超限停用自动触发，防死循环）
+  ctxProvCache: null        // 当前会话 provider 缓存（避免每 5s 轮询打一次 session.models RPC）
 };
 const SW_CATS = [
   { key: 'all', name: '全部', color: '#22C55E' },
@@ -7313,12 +7307,8 @@ function fmtSizeSw(n) {
 function initSessionWorkbench(task) {
   SW.task = task;
   SW.expanded = new Set();
-  // 自动压缩开关：本地持久化偏好（2026-09-05 起默认开启；用户取消勾选后记忆为关）
-  SW.ctxAuto = localStorage.getItem('swCtxAuto') !== '0';
-  SW.ctxAutoTick = 0; SW.ctxLastAutoAt = 0; SW.ctxLastAutoUsed = null; SW.ctxAutoIneffective = 0;
+  localStorage.removeItem('swCtxAuto'); // 旧版前端自动压缩偏好已废弃（自动压缩改由智能体内置）
   SW.ctxOverrides = null; SW.ctxOverridesAt = 0; SW.ctxProvCache = null;
-  const autoEl = document.getElementById('swCtxAuto');
-  if (autoEl) autoEl.checked = SW.ctxAuto;
   // 身份卡
   renderSwAgentCard();
   // 文件树 + 统计
@@ -7496,12 +7486,11 @@ function renderSwSessionStats(vals) {
 }
 
 // ---------- 右栏：上下文卡片 ----------
-// 自动压缩触发阈值（真实窗口占比）。2026-09-05 由 0.85 下调至 0.70：
-// 压缩摘要请求需装下「全部被压缩历史」——本地 qwen 实际窗口 128K（llama.cpp -c 131072）下，
-// 0.85 时触发（~109K）摘要请求几乎必超限失败（llama.cpp 截断/摘要无效）；0.70（~92K）留足摘要余量。
-const CTX_AUTO_RATIO = 0.70;
-// 单会话自动触发最小间隔（ms）：配合每 5s 轮询，防止达到阈值后每轮重复发 /compact
-const CTX_AUTO_MIN_INTERVAL = 60000;
+// 自动压缩说明（2026-09-07 起）：压缩由智能体内置的 agent/pre-step 压力触发完成
+// （compaction-basic 服务，默认阈值 80% 窗口、保留尾 16%，随 preset 装配）。
+// wb 前端不再自行触发自动压缩——此前前端轮询触发 /compact 的方案已废弃，
+// 一则与智能体内置机制重复，二则在 preset 未装配 compaction 的会话里必然失败。
+// 前端保留：压力环显示（projectedTokens 基准）+ 手动「提前压缩上下文」按钮（/compact 命令）。
 
 // 加载自定义 provider 的真实上下文窗口覆盖（llm-pi-ai.providers[*].contextWindow）
 // 缓存带 TTL：设置中心修改「真实上下文窗口」后，最多 CTX_OVERRIDE_TTL 内自动生效（无需重开任务）
@@ -7585,34 +7574,8 @@ async function refreshSwCtx() {
       else badgeEl.hidden = true;
     }
     compactBtn.disabled = false;
-    // 自动压缩：达到真实阈值且在自触发窗口内 → 走 commands/execute 通道无确认执行
-    // 死循环防护：若上次触发后 used（projectedTokens 基准）未明显下降（压缩无效，如窗口设置过小/摘要本身大），
-    // 连续 2 次无效则自动停用本会话的自动触发并提示，避免每 60s 永久空转
-    let autoFired = false;
-    if (SW.ctxAuto && !SW.ctxRunning) {
-      const threshold = Math.round(win * CTX_AUTO_RATIO);
-      const now = Date.now();
-      if (used >= threshold && (now - SW.ctxLastAutoAt) > CTX_AUTO_MIN_INTERVAL) {
-        if (SW.ctxLastAutoUsed != null && used > SW.ctxLastAutoUsed * 0.95) {
-          SW.ctxAutoIneffective += 1; // 压缩无效：used 几乎没降
-        } else {
-          SW.ctxAutoIneffective = 0;  // 有效（下降 >5%）或首次触发：清零
-        }
-        if (SW.ctxAutoIneffective >= 2) {
-          SW.ctxAuto = false;
-          localStorage.setItem('swCtxAuto', '0');
-          const autoChk = document.getElementById('swCtxAuto');
-          if (autoChk) autoChk.checked = false;
-          toast('自动压缩已停用：连续两次压缩后上下文未下降（真实窗口可能设置过小，请到设置中心调大）');
-        } else {
-          SW.ctxLastAutoAt = now;
-          SW.ctxLastAutoUsed = used;
-          SW.ctxAutoTick += 1;
-          autoFired = true;
-        }
-      }
-    }
-    if (autoFired) runSwCompact(true); // skipConfirm
+    // 自动压缩由智能体内置 agent/pre-step 压力触发（compaction-basic，随 preset 装配）——
+    // wb 前端不触发，仅展示；用户可用上方按钮手动提前压缩（/compact 命令）。
   } catch { /* harness 未就绪：静默保持占位 */ }
 }
 
@@ -7635,32 +7598,28 @@ async function execSessionCommand(sessionId, line) {
   return v;
 }
 
-// 提前压缩上下文（走 commands/execute 命令通道；skipConfirm=true 用于自动触发，跳过确认弹窗）
+// 提前压缩上下文（走 commands/execute 命令通道；手动按钮专用，自动压缩由智能体内置）
 // 注意：
 //   1) 确认弹窗必须用 wbConfirm（自研弹窗）——原生 window.confirm 在内嵌/预览环境会被静默屏蔽，
 //      返回 false 导致点击后无任何反应（2026-08-29 实测反馈的"点了没后续"根因之一）。
 //   2) commands/execute 是同步阻塞 RPC：本地量化模型生成摘要需 1~5 分钟，期间 fetch pending。
 //      因此确认后立即给出明确反馈（toast + 按钮文案注明预计耗时），不能只显示"压缩中..."。
-async function runSwCompact(skipConfirm) {
+async function runSwCompact() {
   const task = SW.task;
   if (!task || !task.sessionId || SW.ctxRunning) return;
-  if (!skipConfirm) {
-    const ok = await wbConfirm({
-      title: '提前压缩上下文',
-      message: '将把较早的对话历史压缩为摘要，释放上下文空间。压缩不可撤销，继续？\n（本地模型生成摘要约需 1~5 分钟；期间可继续对话——新消息会自动排队，压缩完成后依次处理，互不影响。请勿关闭任务窗口，关闭会中止压缩）',
-      okText: '开始压缩'
-    });
-    if (!ok) return;
-  }
+  const ok = await wbConfirm({
+    title: '提前压缩上下文',
+    message: '将把较早的对话历史压缩为摘要，释放上下文空间。压缩不可撤销，继续？\n（本地模型生成摘要约需 1~5 分钟；期间可继续对话——新消息会自动排队，压缩完成后依次处理，互不影响。请勿关闭任务窗口，关闭会中止压缩）',
+    okText: '开始压缩'
+  });
+  if (!ok) return;
   const btn = document.getElementById('swCtxCompact');
   const oldTxt = btn.textContent;
   btn.disabled = true;
   btn.textContent = '压缩中…(约1-5分钟)';
   SW.ctxRunning = true;
   // 立即反馈：调用发出后先告知用户已在执行，避免阻塞等待期间"无反应"观感
-  toast(skipConfirm
-    ? `已自动触发上下文压缩（第 ${SW.ctxAutoTick} 次），正在生成摘要（本地模型约需 1~5 分钟）…`
-    : '压缩请求已提交，正在生成摘要（本地模型约需 1~5 分钟），完成后此处会提示');
+  toast('压缩请求已提交，正在生成摘要（本地模型约需 1~5 分钟），完成后此处会提示');
   try {
     const usedBefore = SW.ctxLastShownUsed || null; // 供成功提示对比（refreshSwCtx 维护）
     const v = await execSessionCommand(task.sessionId, '/compact');
@@ -7681,15 +7640,9 @@ async function runSwCompact(skipConfirm) {
     } else if (msg.includes('useful summary')) {
       // harness 'summary' 失败：摘要请求装不下/摘要无效——本地小窗口模型的典型结构性失败
       toast('压缩失败：摘要生成失败（上下文已接近本地模型硬上限，摘要请求装不下全部历史）。' +
-        '建议：① 保持「到达阈值自动压缩」开启（70% 提前触发，此时摘要可正常生成）；② 或新开任务继续，本任务历史仍可在原窗口查看。');
+        '建议新开任务继续，本任务历史仍可在原窗口查看。');
     } else if (msg.includes('not idle') || msg.includes('active compaction') || msg.includes('busy')) {
-      // 智能体非空闲（回合收尾/标题生成/已有压缩）：命令被拒≠压缩无效——
-      // 重置无效计数基准，避免自动压缩被「连续两次无效」保护误停用；按 60s 间隔自动重试
-      SW.ctxLastAutoUsed = null;
-      SW.ctxAutoIneffective = 0;
-      toast(skipConfirm
-        ? '智能体正忙，本次自动压缩未执行（将在空闲后自动重试）'
-        : '压缩失败：智能体正忙（对话进行中或已有压缩在执行），请等本轮回复结束后再试。');
+      toast('压缩失败：智能体正忙（对话进行中或已有压缩在执行），请等本轮回复结束后再试。');
     } else if (msg.includes('changed')) {
       toast('压缩失败：压缩期间有新消息进入，历史已变化（对话未受影响）。请在会话空闲时重试。');
     } else {
@@ -7887,13 +7840,8 @@ async function removeSwShelfDoc(relPath) {
     renderSwTree(SW.tree);
   });
   document.getElementById('swFilesRefresh').addEventListener('click', () => loadSwFiles());
-  // 上下文压缩（手动 + 自动开关）
-  document.getElementById('swCtxCompact').addEventListener('click', () => runSwCompact(false));
-  document.getElementById('swCtxAuto').addEventListener('change', (e) => {
-    SW.ctxAuto = e.target.checked;
-    localStorage.setItem('swCtxAuto', SW.ctxAuto ? '1' : '0');
-    toast(SW.ctxAuto ? '已开启：到达真实上下文阈值时自动压缩' : '已关闭自动压缩');
-  });
+  // 上下文压缩（手动按钮；自动压缩由智能体内置 agent/pre-step 压力触发）
+  document.getElementById('swCtxCompact').addEventListener('click', () => runSwCompact());
   // 书架
   document.getElementById('swShelfAddBtn').addEventListener('click', () => openSwShelfPick());
   document.getElementById('swShelfList').addEventListener('click', e => {

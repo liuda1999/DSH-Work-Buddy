@@ -327,15 +327,17 @@ function installSkillFrom(sourceDir, rawName) {
 
 // ---------- 通用兼容模式 preset（Web 扩展组件，harness 用户 preset 根） ----------
 // harness 支持用户自定义 preset：<dshHome>/.agent-presets/<id>/agent.cordis.yml（trust:user，agentPreset.list 可见）。
-// 「通用兼容」装配：终端（POSIX 持久 bash / Windows pwsh）+ 文件编辑 + 文件搜索（fs-search）+ 网络搜索（web_search）
-// + 技能目录（skill-filesystem/tool-skill）；全部使用 harness 既有工具（与 standard 同源，零新增依赖）。
+// 「通用兼容」装配：终端（bash/pwsh，含 sandbox_permissions 权限升级）+ 文件编辑 + 文件搜索（fs-search）
+// + 网络搜索（web_search）+ 技能目录（skill-filesystem/tool-skill）+ 压缩（compaction group，2026-09-07 补）；
+// 全部使用 harness 既有工具（与 standard 同源，零新增依赖）。
 // 刻意避开 subagent/workflow/goal/todo/plan/ask-user/jobs 等 DeepSeek 专用/复杂工具——
 // 第三方/本地模型（非 DeepSeek 官方）在 function calling 下易因这些工具诱发失败循环（spec：thirdparty-model-preset-default）。
 // 不修改 deepseek-harness 任何源码/配置；目标位于用户主目录（项目树外，符合凭证/数据安全约定），幂等安装。
 const UNIVERSAL_PRESET_DIR = path.join(os.homedir(), '.dsh', '.agent-presets', 'universal');
 const UNIVERSAL_PRESET_YML = `# The universal agent preset: 通用兼容模式（WorkBuddy-Web 扩展组件）。
-# 工具面：终端（POSIX 持久 bash / Windows pwsh）+ 文件编辑 + 文件搜索 + 网络搜索 + 技能（skill）。
-# 全部为 harness 既有基础工具（web_search 默认启用、web_fetch 关闭——web_fetch 为 SSRF 原语，见 harness Web seam 笔记）。
+# 工具面：终端（bash/pwsh，带 sandbox_permissions 权限升级）+ 文件编辑 + 文件搜索 + 网络搜索
+# + 技能（skill）+ 压缩（compaction：自动压缩 + /compact 命令 + 工具结果修剪）。
+# 全部为 harness 既有基础工具（与 standard 同源，零新增依赖）。
 # 刻意避开 subagent/workflow/goal/todo/plan/ask-user/jobs 等 DeepSeek 专用/复杂工具——
 # 第三方/本地模型在 function calling 下易因这些工具诱发失败循环。
 
@@ -357,6 +359,16 @@ const UNIVERSAL_PRESET_YML = `# The universal agent preset: 通用兼容模式�
         read the error, fix the arguments, and retry once with the corrected call. Never give up
         on the first argument error, and never loop retrying the same broken call.
 
+      Permission discipline (2026-09-07 修复：智能体因权限问题默默放弃计划):
+      * When a file operation or command is denied by the sandbox ("file access denied under
+        ... mode"), retry the exact same call ONCE with sandbox_permissions (the narrowest
+        wider mode that suffices) plus a one-sentence justification — the approval prompt that
+        appears is how the user consents. This is the one sanctioned path past a denial.
+      * Never silently abandon a plan because of a permission denial: either retry with
+        sandbox_permissions, or tell the user exactly what access you need and wait.
+      * OS-level permission errors outside the sandbox (e.g. root-owned paths, sudo needed)
+        cannot be fixed by sandbox_permissions — state clearly what is needed and ask the user.
+
       Answer discipline:
       * Always write your final answer to the user in the visible text output. Never leave the
         answer only in your reasoning — the user cannot see reasoning as an answer.
@@ -377,17 +389,14 @@ const UNIVERSAL_PRESET_YML = `# The universal agent preset: 通用兼容模式�
       disabled: !!js process.platform === 'win32'
       config:
         timeoutMs: 300000
-    - id: persistent-bash
-      name: '@deepseek-ai/dsh-tool-bash-persistent'
-      disabled: !!js process.platform === 'win32'
-      config:
-        timeoutMs: 300000
-        description: |-
-          Run commands in a bash shell
-          * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
-          * You don't have access to the internet via this tool.
-          * State is persistent across command calls and discussions with the user.
-          * Please avoid commands that may produce a very large amount of output.
+
+# 模型用 bash（2026-09-07 修复：权限申请缺失根因）：此前用 dsh-tool-bash-persistent——
+# 该工具无 sandbox_permissions 参数，模型被沙箱拒绝后没有任何升级申请通道，只能放弃计划。
+# 换成与 standard 同源的 dsh-tool-bash：工具 schema 自带 sandbox_permissions+justification
+# 一次性升级重试机制，工具描述即指导（拒绝 → 带 justification 重试 → 审批卡片弹给用户）。
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
 
 # Windows 上 bash 不可用：用 harness 既有 pwsh 工具补位（与 standard 的 win32 分支一致）
 - id: tool-pwsh
@@ -426,20 +435,48 @@ const UNIVERSAL_PRESET_YML = `# The universal agent preset: 通用兼容模式�
   name: '@deepseek-ai/dsh-skill-filesystem'
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'
+
+# ── compaction（2026-09-07 修复：自动压缩失效根因）───────────────────────────
+# web-app bundle 在 host 层 disabled 了 compaction（token meter 留在 host，compaction 后端
+# 由各 agent preset 装配——见 web-app/cordis.patch.yml）。standard preset 装配了本 group，
+# 而 universal 此前缺失 → 通用兼容模式下既无步间自动压缩（agent/pre-step 压力触发）、
+# 又无 /compact 命令、也无工具结果修剪。按 standard 同源装配（compaction-basic 默认
+# auto:true、thresholdRatio 0.8、retainRatio 0.16、maxTokens 8192）。
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
 `;
 const UNIVERSAL_PRESET_META = `name: 通用兼容模式
 description: 终端（bash/pwsh）+ 文件编辑 + 文件搜索 + 网络搜索 + 技能目录（llm-wiki 等技能可用），面向第三方/本地模型的最小工具面。
 order: 5
 `;
-// 幂等安装：目标目录已有 agent.cordis.yml 则跳过；写失败不阻塞启动
+// 幂等安装 + 内容升级：目标文件与模板一致则跳过；不同（如旧版缺 compaction/权限升级 bash）则重写。
+// 写失败不阻塞启动；已存在会话继续用已挂载的旧 preset，新会话即用新版。
 function ensureUniversalPreset() {
   try {
     const target = path.join(UNIVERSAL_PRESET_DIR, 'agent.cordis.yml');
-    if (fs.existsSync(target)) return;
+    const stale = fs.existsSync(target) && fs.readFileSync(target, 'utf8') !== UNIVERSAL_PRESET_YML;
+    if (fs.existsSync(target) && !stale) return;
     fs.mkdirSync(UNIVERSAL_PRESET_DIR, { recursive: true });
     fs.writeFileSync(target, UNIVERSAL_PRESET_YML, 'utf8');
     fs.writeFileSync(path.join(UNIVERSAL_PRESET_DIR, 'preset.yml'), UNIVERSAL_PRESET_META, 'utf8');
-    console.log(`[DSH Work Buddy] 通用兼容模式已安装：${UNIVERSAL_PRESET_DIR}（重启智能体后 agentPreset.list 可见）`);
+    console.log(`[DSH Work Buddy] 通用兼容模式已${stale ? '升级' : '安装'}：${UNIVERSAL_PRESET_DIR}${stale ? '（补 compaction/权限升级，重启智能体后新会话生效）' : '（重启智能体后 agentPreset.list 可见）'}`);
   } catch (e) {
     console.warn(`[DSH Work Buddy] 通用兼容模式安装失败：${e.message}`);
   }
