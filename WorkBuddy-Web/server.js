@@ -441,7 +441,7 @@ const UNIVERSAL_PRESET_YML = `# The universal agent preset: 通用兼容模式�
 # 由各 agent preset 装配——见 web-app/cordis.patch.yml）。standard preset 装配了本 group，
 # 而 universal 此前缺失 → 通用兼容模式下既无步间自动压缩（agent/pre-step 压力触发）、
 # 又无 /compact 命令、也无工具结果修剪。按 standard 同源装配（compaction-basic 默认
-# auto:true、thresholdRatio 0.8、retainRatio 0.16、maxTokens 8192）。
+# auto:true、thresholdRatio 0.8、retainRatio 0.16；摘要 maxTokens 提至 24576，见下）。
 - id: compaction
   name: cordis:group
   group: true
@@ -449,8 +449,15 @@ const UNIVERSAL_PRESET_YML = `# The universal agent preset: 通用兼容模式�
     compaction: true
     toolResultPruner: true
   config:
+    # maxTokens 24576（2026-09-07 修复手动压缩报错「could not produce a useful summary」根因）：
+    # compaction-basic 默认摘要输出预算 8192——thinking 模型（Qwen3.8）在 ~100K+ 大上下文上
+    # 做摘要时 reasoning 先行耗尽 8192 预算，正文零输出 → harness 报
+    # "summarization produced no text summary content"。给摘要留 24K 预算根治；
+    # 大 prompt+24K 输出仍 < 窗口 131072（104K+24K=128K ✓）。
     - id: compaction-basic
       name: '@deepseek-ai/dsh-compaction-basic'
+      config:
+        maxTokens: 24576
 
     - id: command-compact
       name: '@deepseek-ai/dsh-command-compact'

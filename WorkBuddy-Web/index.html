@@ -7638,9 +7638,10 @@ async function runSwCompact() {
     if (msg.includes('session-not-found')) {
       toast('压缩失败：会话未在智能体中加载（可能已重启）。请关闭并重新打开该任务后重试。');
     } else if (msg.includes('useful summary')) {
-      // harness 'summary' 失败：摘要请求装不下/摘要无效——本地小窗口模型的典型结构性失败
-      toast('压缩失败：摘要生成失败（上下文已接近本地模型硬上限，摘要请求装不下全部历史）。' +
-        '建议新开任务继续，本任务历史仍可在原窗口查看。');
+      // harness 'summary' 失败：摘要无文本输出（thinking 模型 reasoning 耗尽输出预算）或摘要不小于原文。
+      // harness 自带恢复：失败后自动修剪超大工具结果并按步间压力重试自动压缩（实测有效，约 1~3 分钟）。
+      toast('压缩未完成：摘要生成失败（大上下文下思考型模型的摘要预算易耗尽）。' +
+        '智能体会自动修剪超长工具结果并在步间自动重试压缩，稍候 1~3 分钟可看上方上下文环确认；也可稍后再点本按钮重试。');
     } else if (msg.includes('not idle') || msg.includes('active compaction') || msg.includes('busy')) {
       toast('压缩失败：智能体正忙（对话进行中或已有压缩在执行），请等本轮回复结束后再试。');
     } else if (msg.includes('changed')) {
