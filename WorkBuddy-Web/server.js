@@ -1995,10 +1995,10 @@ async function getCatalogSession() {
   try {
     let v;
     try {
-      v = await harnessRpc('session.create', { cwd: DATA_DIR, sessionId: FIXED_ID });
+      v = await harnessRpc('session.create', { cwd: path.resolve(__dirname, '..'), sessionId: FIXED_ID });
     } catch (e) {
       // 预分配 id 与既有会话冲突（cwd 不同）时退回普通创建
-      v = await harnessRpc('session.create', { cwd: DATA_DIR });
+      v = await harnessRpc('session.create', { cwd: path.resolve(__dirname, '..') });
     }
     catalogSessionId = v.sessionId;
     return catalogSessionId;
