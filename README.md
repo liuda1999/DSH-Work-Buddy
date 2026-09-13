@@ -66,9 +66,13 @@ VitePress 驱动的 Wiki 文档站点，用于构建和发布 LLM Wiki 文档。
 |------|----------|-----------|------|
 | WorkBuddy-Web | 任意静态服务器 | - | 纯前端，可直接用浏览器打开 |
 | deepseek-harness | pnpm 11.7.0 | `^22.19.0 \|\| >=24.0.0` | 构建前需先安装依赖 |
-| llm-wiki | pnpm 10.33.0 | `>=20` | 构建前需先安装依赖 |
+| llm-wiki | pnpm 10.33.0 | `>=20` | 构建前需先安装依赖；**需安装 Git**（VitePress lastUpdated 功能依赖） |
 
 ---
+
+
+> **📌 前置检查**：请确保已安装 [Git](https://git-scm.com/download/win)，否则 Wiki 文档库构建会失败。
+> （安装后重启终端或重新打开命令行，确保 `git --version` 能输出版本号）
 
 ## 部署与启动
 
