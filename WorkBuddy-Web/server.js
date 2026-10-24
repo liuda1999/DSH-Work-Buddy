@@ -2958,7 +2958,19 @@ function findArchiveSessionDir(groupName, taskId) {
   const MCP_PRESET_TARGETS = ['standard-fix', 'universal']; // wb 管理的用户预设（shipped 预设只读不可写）
   const MCP_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
   function loadMcpServers() {
-    try { return JSON.parse(fs.readFileSync(MCP_FILE, 'utf8')).servers || []; } catch (_) { return []; }
+    try {
+      return JSON.parse(fs.readFileSync(MCP_FILE, 'utf8')).servers || [];
+    } catch (e) {
+      // 审计修复（v0.3.1）：手工编辑导致坏 JSON 时备份原文件，避免下次开关用空表覆盖丢失全部注册
+      if (fs.existsSync(MCP_FILE)) {
+        try {
+          const backup = MCP_FILE + '.corrupt-' + Date.now();
+          fs.copyFileSync(MCP_FILE, backup);
+          console.warn(`[DSH Work Buddy] mcp.json 解析失败（${e.message}），已备份至 ${backup}，注册表按空处理`);
+        } catch (_) { /* 备份失败不阻塞 */ }
+      }
+      return [];
+    }
   }
   function saveMcpServers(servers) {
     const tmp = MCP_FILE + '.tmp';
@@ -2978,12 +2990,36 @@ function findArchiveSessionDir(groupName, taskId) {
     } else {
       return 'transport 必须是 stdio 或 streamable-http';
     }
+    // 审计修复（v0.3.1）：harness mcp-client schema 要求 args 为字符串数组、env/headers 为字符串字典，
+    // 非字符串值会让插件挂载失败并可能炸掉整个预设组合（所有新会话创建失败）——入口即强制字符串化
+    if (e.args !== undefined) {
+      if (!Array.isArray(e.args)) return 'args 必须是数组';
+      e.args = e.args.map((x) => String(x));
+    }
+    for (const key of ['env', 'headers']) {
+      if (e[key] !== undefined && typeof e[key] === 'object' && !Array.isArray(e[key])) {
+        for (const k of Object.keys(e[key])) {
+          if (typeof e[key][k] !== 'string') {
+            return `${key}.${k} 的值必须是字符串（数字/布尔请加引号）`;
+          }
+        }
+      }
+    }
     return null;
   }
   // 把 enabled 的 MCP 生成为组合行（YAML；标量一律 JSON.stringify，YAML 是 JSON 超集，免转义坑）
   function mcpPresetRows(servers) {
     const lines = ['# BEGIN wb-mcp（WorkBuddy MCP 管理自动生成；手动改动会被下次开关覆盖）'];
     for (const s of servers.filter((x) => x.enabled)) {
+      // 兜底字符串化：即使历史注册表里存有非字符串值（v0.3.1 之前的写入），生成组合行时也不炸 schema
+      if (Array.isArray(s.args)) s.args = s.args.map((x) => String(x));
+      for (const key of ['env', 'headers']) {
+        if (s[key] && typeof s[key] === 'object') {
+          for (const k of Object.keys(s[key])) {
+            if (typeof s[key][k] !== 'string') s[key][k] = String(s[key][k]);
+          }
+        }
+      }
       lines.push(`- id: mcp-${s.serverName}`);
       lines.push(`  name: '@deepseek-ai/dsh-mcp-client'`);
       lines.push(`  config:`);
@@ -3072,7 +3108,7 @@ function findArchiveSessionDir(groupName, taskId) {
       serverName: String(body.serverName || '').trim(),
       transport: String(body.transport || '').trim(),
       command: String(body.command || '').trim(),
-      args: Array.isArray(body.args) ? body.args.map(String) : String(body.args || '').split(/\s+/).filter(Boolean),
+      args: Array.isArray(body.args) ? body.args.map(String) : String(body.args || '').split(/\s+/).filter(Boolean), // 字符串化在 validateMcpEntry 兜底
       env: (body.env && typeof body.env === 'object' && !Array.isArray(body.env)) ? body.env : undefined,
       cwd: String(body.cwd || '').trim() || undefined,
       url: String(body.url || '').trim(),
