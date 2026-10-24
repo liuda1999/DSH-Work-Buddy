@@ -1,7 +1,7 @@
 # AGENTS.md — DSH Work Buddy 项目指南与运维手册
 
 > 本文件是智能体读取的项目总纲：项目是什么、由哪些组件构成、每部分如何运作、如何启动与运维。
-> 项目版本：**v0.1.99**（见根目录 `VERSION`）。修改本项目时请先阅读本节与对应模块章节，遵循末尾「项目约定」。
+> 项目版本：**v0.3.1**（见根目录 `VERSION`）。修改本项目时请先阅读本节与对应模块章节，遵循末尾「项目约定」。
 
 ---
 
@@ -24,7 +24,7 @@
 
 ```
 e:\worke
-├── VERSION                 # 项目顶层版本号（当前 0.1.99）
+├── VERSION                 # 项目顶层版本号（当前 0.3.1）
 ├── README.md               # 对外说明
 ├── start.bat               # 一键启动（Windows）：依赖/构建（幂等）→ 端口检查 → 启动 Web + 拉起智能体
 ├── start.sh                # 一键启动（macOS/Linux）：等价 bash 逻辑，首次运行先 chmod +x
@@ -53,7 +53,7 @@ e:\worke
 | **文件归档** | `archive` | 归档组管理 + 归档会话卡片（文件大小 MB / Token 万/亿，两位小数）；点卡片打开详情弹窗（左：按扩展名分类的文件列表，可预览/下载；右：对话记录） |
 | **日程管理** | `schedule` | 日程/待办视图 |
 | **团队协作** | `team` | 占位（敬请期待） |
-| **资源仓库** | `resources` | Tab：插件（dsh 实时清单，只读）、技能、智能体身份、Wiki 知识库（**分类 > 仓库 > 文档三级结构**：新建仓库/新建文档归仓/编辑移动仓库 + 增删检索 + **知识图谱**：文档+章节节点、跨文档引用） |
+| **资源仓库** | `resources` | Tab：插件（dsh 实时清单，只读）、技能、智能体身份、**MCP 管理**（wb 自建注册表 `data/mcp.json`：stdio / streamable-http 服务器列表，每服务器**启用开关** + 增删，开关/增删即时同步到用户预设组合 standard-fix/universal 的 `agent.cordis.yml`（`BEGIN/END wb-mcp` 幂等标记块），对**新建会话**生效）、Wiki 知识库（**分类 > 仓库 > 文档三级结构**：新建仓库/新建文档归仓/编辑移动仓库 + 增删检索 + **知识图谱**：文档+章节节点、跨文档引用） |
 | **插件社区** | `plugin-community` | 网址导航瀑布流：**9 个预置精选社区**（含 dsh-plugin 专题、Hugging Face、魔搭等，不可删）+ 用户自建收藏（可删） |
 | **设置中心** | `settings` | 大模型 API 配置：DeepSeek 官方卡、默认模型卡、插件与运行时卡（shell/agent-loop/web-search 分级档位）、**内置供应商目录**（40+ 家 catalog，配置密钥即启用）、**自定义 Provider**（本地 vLLM/llama.cpp/ollama OpenAI 兼容端点 + 「获取模型」按钮 + 编辑）、高级命名空间动态表单 |
 
@@ -78,6 +78,9 @@ e:\worke
    - 插件社区：`{presets: 预置 9 项, user: 自建收藏}`；**用户收藏落盘**（`data/plugin-community.json`，重启恢复）。
    - 归档：组定位兼容 **id 或 name**（前端下拉提交组名）；归档会话落盘 `<组>/<任务>_<id后6位>/`。
    - 任务：`agentTemplate`（智能体身份）随 PATCH 持久化 `task.json`，重启恢复；前端关闭弹窗重开经 openSessionModal/renderSwAgentCard 双层兜底同步最新身份。
+   - **MCP 管理**（v0.3.0+）：`GET/POST /api/resources/mcp`、`POST /api/resources/mcp/<name>/toggle`、`DELETE /api/resources/mcp/<name>`；注册表 `data/mcp.json`（损坏自动备份 `mcp.json.corrupt-<ts>`）；写入口强制 env/headers 值与 args 元素为字符串（防 harness schema 拒绝炸掉预设组合）；运行态工具数经 `tools.list` RPC 统计 `mcp__<serverName>__` 前缀（不可用时留空）。
+   - **幽灵工作区自愈**（v0.2.0+）：`GET /api/workspaces` 只展示受管根（`data/workspaces`/`data/tasks`）之下或有任务绑定的注册；harness 就绪后 `sweepGhostWorkspaces()` 自动解除"项目外 + 目录已消失 + 无任务绑定"的注册（失败重试 5×5s），只解除注册、永不触碰磁盘数据。
+   - **用户预设**（~/.dsh/.agent-presets/，roster 每次重读、改动即时对新会话生效）：`standard-fix`（standard 同源 + 压缩修正：tool-result-pruner 2048/1024/512、maxOverflowRetries 2 + MCP 组合块）与 `universal`（通用兼容模式 + compaction group + MCP 组合块）；shipped 预设只读不可写。
 2. **RPC 转发**（`/api/<method>` → harness 3080，envelope `{type:'client-request', rpcId, method, payload}`）：`session.*`、`workspace.*`、`llm.*`、`credentials.*`、`settings.*`、`agentPreset.*`、`skill.*`、`commands.*` 等全量透传。
    - **必须改写 Origin 头为 `http://127.0.0.1:3080`**（dsh 连接围栏要求 Origin 与 Host 匹配，否则 403）。
 3. **WS 桥**：`/api/events.mux`（会话事件流，Origin 同样改写）。
