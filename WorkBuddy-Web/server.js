@@ -171,9 +171,21 @@ const mime = {
   '.eot': 'application/vnd.ms-fontobject',
 };
 
+// 手机 UA 判定（v0.4.0 移动端竖屏界面）：只匹配手机类 UA，iPad/桌面模式平板保持桌面版
+const MOBILE_UA_RE = /(?:Android.+Mobile|iPhone|iPod|BlackBerry|Opera Mini|IEMobile|webOS|Mobile Safari)/i;
+function isMobileUA(req) {
+  const ua = String((req && req.headers && req.headers['user-agent']) || '');
+  return MOBILE_UA_RE.test(ua);
+}
+
 function serveStatic(urlPath, res, req) {
   let p = urlPath;
   if (p === '/') p = '/index.html';
+  // 移动端重定向（v0.4.0）：手机 UA 访问桌面首页 → 302 竖屏版 /m.html；?desktop=1 强制桌面版
+  if (p === '/index.html' && isMobileUA(req) && !/[?&]desktop=1/.test(String(req.url || ''))) {
+    res.writeHead(302, { Location: '/m.html#/tasks' });
+    return res.end();
+  }
   const filePath = path.join(__dirname, p);
   if (!filePath.startsWith(__dirname)) { res.writeHead(403); res.end('Forbidden'); return; }
   serveFileFromDisk(filePath, res, req, () => { res.writeHead(404); res.end('Not found: ' + p); });
@@ -676,7 +688,7 @@ const isLocalApi = (p) => p === '/api/workspaces/sync-harness' || LOCAL_API_PREF
 
 // WorkBuddy 自身的静态资源（不转发）
 const WORKBUDDY_STATIC = (p) =>
-  p === '/' || p === '/index.html' ||
+  p === '/' || p === '/index.html' || p === '/m.html' ||
   p === '/logo.jpg' || p === '/favicon.ico' || p === '/favicon.png' ||
   p.startsWith('/card-bg/') ||
   p.startsWith('/modules/');

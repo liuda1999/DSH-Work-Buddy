@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#0B1220">
+<title>DSH Work Buddy · 移动端</title>
+<style>
+:root{
+  --bg:#0B1220;--bg2:#111A2E;--card:#16203A;--border:#24304F;--text:#E6ECF8;--text2:#8A97B5;
+  --green:#22C55E;--blue:#3B82F6;--gray:#64748B;--red:#EF4444;--amber:#F59E0B;
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Microsoft YaHei',sans-serif;font-size:15px}
+button{font-family:inherit}
+.hidden{display:none!important}
+
+/* ── 顶栏 ── */
+.topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:10px;padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;background:rgba(11,18,32,.92);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
+.topbar h1{font-size:16px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topbar .sub{font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.iconbtn{border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:8px;padding:6px 10px;font-size:13px;cursor:pointer;flex:none}
+.iconbtn:active{opacity:.7}
+.link-desktop{color:var(--text2);font-size:12px;text-decoration:none;flex:none}
+
+/* ── 任务列表视图 ── */
+#viewTasks{height:100%;display:flex;flex-direction:column}
+.scroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 14px calc(env(safe-area-inset-bottom) + 20px)}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}
+.kpi{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:8px 6px;text-align:center}
+.kpi b{display:block;font-size:18px}
+.kpi span{font-size:10px;color:var(--text2)}
+.kpi.today b{color:var(--green)}.kpi.in_progress b{color:var(--blue)}
+.kpi.completed b{color:var(--gray)}.kpi.overdue b{color:var(--red)}
+.grp-head{display:flex;align-items:center;gap:8px;margin:14px 0 8px;font-size:13px;color:var(--text2)}
+.grp-head .dot{width:8px;height:8px;border-radius:50%}
+.grp-head b{color:var(--text)}
+.tcard{background:var(--card);border:1px solid var(--border);border-left:3px solid var(--gray);border-radius:12px;padding:12px 14px;margin-bottom:10px;cursor:pointer}
+.tcard:active{filter:brightness(1.15)}
+.tcard.g-today{border-left-color:var(--green)}.tcard.g-in_progress{border-left-color:var(--blue)}
+.tcard.g-completed{border-left-color:var(--gray)}.tcard.g-overdue{border-left-color:var(--red)}
+.tcard .tt{font-weight:600;font-size:15px;margin-bottom:6px;word-break:break-all}
+.tcard .tm{display:flex;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--text2)}
+.tcard .badge{padding:1px 7px;border-radius:999px;font-size:10px;background:#1E2A47;color:var(--text2)}
+.tcard .badge.overdue{color:#FCA5A5;background:#3B1D24}
+.tcard .badge.today{color:#86EFAC;background:#153729}
+.tcard.g-completed{opacity:.6}
+.empty{color:var(--text2);text-align:center;padding:40px 0;font-size:13px}
+
+/* ── 会话视图 ── */
+#viewChat{height:100%;display:flex;flex-direction:column}
+#msgScroll{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 12px 6px}
+.msg{display:flex;margin-bottom:10px}
+.msg.user{justify-content:flex-end}
+.bubble{max-width:82%;padding:9px 12px;border-radius:14px;font-size:14px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.msg.user .bubble{background:#1E4D36;border-bottom-right-radius:4px}
+.msg.assistant .bubble{background:var(--card);border:1px solid var(--border);border-bottom-left-radius:4px}
+.sysline{display:flex;align-items:center;gap:6px;color:var(--text2);font-size:11px;margin:8px 0;padding-left:4px}
+.sysline.err{color:#FCA5A5}
+.think{color:var(--text2);font-size:12px}
+.think summary{cursor:pointer;color:#7C8DB0}
+.think div{margin-top:4px;padding:8px 10px;background:#131C33;border-radius:8px;white-space:pre-wrap;max-height:180px;overflow-y:auto}
+.readonly-bar{background:#3B1D24;color:#FCA5A5;font-size:12px;padding:8px 14px;text-align:center}
+/* 输入栏 */
+.inputbar{display:flex;gap:8px;align-items:flex-end;padding:8px 12px calc(env(safe-area-inset-bottom) + 10px);background:rgba(11,18,32,.95);border-top:1px solid var(--border)}
+.inputbar textarea{flex:1;resize:none;background:var(--card);border:1px solid var(--border);border-radius:14px;color:var(--text);padding:10px 12px;font-size:15px;line-height:1.4;max-height:110px;outline:none;font-family:inherit}
+.sendbtn{flex:none;width:44px;height:44px;border-radius:50%;border:none;background:var(--green);color:#04130A;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.sendbtn.stop{background:var(--red);color:#fff}
+.sendbtn:disabled{opacity:.4}
+.chipbar{display:flex;gap:8px;align-items:center;padding:6px 14px;background:rgba(11,18,32,.95);border-top:1px solid var(--border);font-size:11px;color:var(--text2)}
+.chipbar .chip{border:1px solid var(--border);border-radius:999px;padding:2px 9px;max-width:46%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chipbar .spacer{flex:1}
+.chipbar .mini{border:1px solid var(--border);background:transparent;color:var(--text2);border-radius:999px;padding:2px 10px;font-size:11px;cursor:pointer}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom) + 76px);background:#223052;color:var(--text);font-size:13px;padding:9px 16px;border-radius:10px;z-index:99;max-width:86%;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+</style>
+</head>
+<body>
+
+<!-- ═══ 视图 1：任务列表（首页） ═══ -->
+<div id="viewTasks">
+  <div class="topbar">
+    <div style="flex:1;min-width:0">
+      <h1>DSH Work Buddy</h1>
+      <div class="sub" id="taskSub">加载中…</div>
+    </div>
+    <a class="link-desktop" href="/?desktop=1">桌面版</a>
+    <button class="iconbtn" id="btnRefresh">刷新</button>
+  </div>
+  <div class="scroll">
+    <div class="kpis">
+      <div class="kpi today"><b id="kToday">—</b><span>今日待办</span></div>
+      <div class="kpi in_progress"><b id="kProg">—</b><span>进行中</span></div>
+      <div class="kpi completed"><b id="kDone">—</b><span>已完成</span></div>
+      <div class="kpi overdue"><b id="kOver">—</b><span>逾期</span></div>
+    </div>
+    <div id="taskList"><div class="empty">加载中…</div></div>
+  </div>
+</div>
+
+<!-- ═══ 视图 2：智能体对话 ═══ -->
+<div id="viewChat" class="hidden">
+  <div class="topbar">
+    <button class="iconbtn" id="btnBack">←</button>
+    <div style="flex:1;min-width:0">
+      <h1 id="chatTitle">—</h1>
+      <div class="sub" id="chatSub"></div>
+    </div>
+  </div>
+  <div class="chipbar">
+    <span class="chip" id="chipModel">模型：—</span>
+    <span class="chip" id="chipCtx">上下文：—</span>
+    <span class="spacer"></span>
+    <button class="mini" id="btnCompact">🗜 压缩</button>
+  </div>
+  <div class="readonly-bar hidden" id="readonlyBar"></div>
+  <div id="msgScroll"></div>
+  <div class="inputbar">
+    <textarea id="chatInput" rows="1" placeholder="输入消息…"></textarea>
+    <button class="sendbtn" id="btnSend">➤</button>
+  </div>
+</div>
+
+<script>
+'use strict';
+// ============ 基础 ============
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let toastTimer = null;
+function toast(msg) {
+  let el = document.querySelector('.toast');
+  if (!el) { el = document.createElement('div'); el.className = 'toast'; document.body.appendChild(el); }
+  el.textContent = msg; el.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.display = 'none'; }, 3200);
+}
+async function rpc(method, payload = {}) {
+  const r = await fetch('/api/' + method, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'client-request', rpcId: 'm-' + Math.random().toString(36).slice(2), method, payload }),
+  });
+  const env = await r.json();
+  if (env.result && env.result.ok) return env.result.value;
+  throw new Error((env.result && env.result.error && (env.result.error.message || env.result.error.code)) || ('HTTP ' + r.status));
+}
+async function api(path, options = {}) {
+  const r = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  let body = null; try { body = await r.json(); } catch (e) { /* 忽略 */ }
+  if (!r.ok) {
+    const e = body && body.error;
+    throw new Error(e ? (typeof e === 'string' ? e : (e.message || '请求失败')) : 'HTTP ' + r.status);
+  }
+  return body;
+}
+
+// ============ 状态 ============
+const M = {
+  tasks: [], currentTask: null, sessionId: null, running: false,
+  turnEnds: 0, pollTimer: null, lastCompact: {}, seenSeqs: new Set(),
+};
+
+// ============ 视图切换 ============
+function showView(name) {
+  $('viewTasks').classList.toggle('hidden', name !== 'tasks');
+  $('viewChat').classList.toggle('hidden', name !== 'chat');
+  if (name === 'tasks') { stopPoll(); refreshTasks(); }
+}
+
+// ============ 任务列表 ============
+const GROUPS = [
+  { key: 'today', name: '今日待办', color: '#22C55E' },
+  { key: 'in_progress', name: '进行中', color: '#3B82F6' },
+  { key: 'overdue', name: '逾期', color: '#EF4444' },
+  { key: 'completed', name: '已完成', color: '#64748B' },
+];
+const STATUS_TEXT = { today: '今日待办', in_progress: '进行中', completed: '已完成', overdue: '已逾期' };
+function fmtDeadline(t) {
+  if (!t.deadline) return '—';
+  const d = new Date(t.deadline); if (isNaN(d)) return '—';
+  const pad = (n) => String(n).padStart(2, '0');
+  const diff = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())) / 86400000);
+  if (diff === 0) return `今天 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  if (diff === 1) return '明天';
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+async function refreshTasks() {
+  try {
+    const d = await api('/api/tasks');
+    M.tasks = (d.tasks || []).filter((t) => !t.archived || t.status !== 'completed');
+    const by = { today: [], in_progress: [], completed: [], overdue: [] };
+    M.tasks.forEach((t) => { (by[t.status] || by.today).push(t); });
+    $('kToday').textContent = by.today.length;
+    $('kProg').textContent = by.in_progress.length;
+    $('kDone').textContent = by.completed.length;
+    $('kOver').textContent = by.overdue.length;
+    $('taskSub').textContent = `${M.tasks.length} 个任务 · ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
+    let html = '';
+    for (const g of GROUPS) {
+      const list = by[g.key] || [];
+      html += `<div class="grp-head"><span class="dot" style="background:${g.color}"></span><b>${g.name}</b> ${list.length}</div>`;
+      html += list.length ? list.map(taskCard).join('') : '<div class="empty" style="padding:14px 0">无</div>';
+    }
+    $('taskList').innerHTML = html;
+  } catch (e) {
+    $('taskList').innerHTML = '<div class="empty">加载失败：' + esc(e.message) + '</div>';
+  }
+}
+function taskCard(t) {
+  return `<div class="tcard g-${esc(t.status)}" data-id="${esc(t.id)}">
+    <div class="tt">${esc(t.title || t.id)}</div>
+    <div class="tm">
+      <span class="badge ${t.status === 'overdue' ? 'overdue' : (t.status === 'today' ? 'today' : '')}">${STATUS_TEXT[t.status] || esc(t.status)}</span>
+      <span>期限 ${esc(fmtDeadline(t))}</span>
+      ${t.sessionId || extractSessionId(t.sessionSnapshot) ? '<span>💬 已有会话</span>' : ''}
+    </div></div>`;
+}
+function extractSessionId(snapshot) {
+  if (!snapshot) return null;
+  try { return JSON.parse(snapshot).sessionId || null; } catch (e) { return null; }
+}
+document.getElementById('taskList').addEventListener('click', (e) => {
+  const card = e.target.closest('.tcard');
+  if (card) openChat(M.tasks.find((t) => t.id === card.dataset.id));
+});
+$('btnRefresh').addEventListener('click', refreshTasks);
+
+// ============ 会话绑定（与桌面 ensureHarnessSession 同语义） ============
+async function ensureSession(task) {
+  const sid = task.sessionId || extractSessionId(task.sessionSnapshot);
+  if (sid) { M.sessionId = sid; return sid; }
+  if (!task.dir) {
+    const updated = await api('/api/tasks/' + encodeURIComponent(task.id), { method: 'PATCH', body: JSON.stringify({ action: 'ensureDir' }) });
+    if (updated && updated.dir) task.dir = updated.dir;
+    if (!task.dir) throw new Error('任务缺少运行目录');
+  }
+  try { await api('/api/tasks/' + encodeURIComponent(task.id) + '/prepare-session', { method: 'POST', body: JSON.stringify({}) }); } catch (e) { /* 忽略 */ }
+  const wr = await rpc('workspace.create', { path: task.dir });
+  const workspaceId = wr && wr.workspace && wr.workspace.workspaceId;
+  if (!workspaceId) throw new Error('workspace.create 未返回 workspaceId');
+  const sr = await rpc('session.create', { workspaceId });
+  if (!sr.sessionId) throw new Error('session.create 未返回 sessionId');
+  M.sessionId = sr.sessionId;
+  task.sessionId = sr.sessionId;
+  task.sessionSnapshot = JSON.stringify({ sessionId: sr.sessionId, v: 1 });
+  api('/api/tasks/' + encodeURIComponent(task.id), { method: 'PATCH', body: JSON.stringify({ action: 'bindSession', snapshot: task.sessionSnapshot, sessionId: sr.sessionId }) }).catch(() => {});
+  return sr.sessionId;
+}
+
+// ============ 会话视图 ============
+function isReadonly(t) { return !!(t && (t.archived || t.status === 'completed' || t.status === 'overdue')); }
+async function openChat(task) {
+  if (!task) return;
+  M.currentTask = task;
+  M.seenSeqs = new Set();
+  M.running = false;
+  $('chatTitle').textContent = task.title || task.id;
+  $('chatSub').textContent = STATUS_TEXT[task.status] || '' + (task.deadline ? ' · 期限 ' + fmtDeadline(task) : '');
+  $('msgScroll').innerHTML = '<div class="sysline">正在连接会话…</div>';
+  showView('chat');
+  const ro = isReadonly(task);
+  $('readonlyBar').classList.toggle('hidden', !ro);
+  $('readonlyBar').textContent = task.status === 'overdue'
+    ? '任务已逾期，会话只读。可回到桌面版「设定新期限」恢复对话。'
+    : '任务已完成或已归档，会话只读。';
+  $('chatInput').disabled = ro;
+  $('btnSend').disabled = ro;
+  try {
+    await ensureSession(task);
+    $('msgScroll').innerHTML = '';
+    await pollHistory(true);
+    loadChatMeta();
+    startPoll();
+  } catch (e) {
+    $('msgScroll').innerHTML = '<div class="sysline err">会话连接失败：' + esc(e.message) + '</div>';
+  }
+}
+async function loadChatMeta() {
+  const t = M.currentTask;
+  $('chatSub').textContent = (STATUS_TEXT[t.status] || '') + (t.deadline ? ' · 期限 ' + fmtDeadline(t) : '');
+  try {
+    const m = await rpc('session.models', { sessionId: M.sessionId });
+    $('chipModel').textContent = '模型：' + ((m.current && (m.current.name || m.current.model)) || '—');
+  } catch (e) { $('chipModel').textContent = '模型：—'; }
+}
+$('btnBack').addEventListener('click', () => showView('tasks'));
+
+// ============ 消息渲染 ============
+function addEl(html) {
+  const div = document.createElement('div');
+  div.innerHTML = html;
+  const el = div.firstChild;
+  $('msgScroll').appendChild(el);
+  $('msgScroll').scrollTop = $('msgScroll').scrollHeight;
+  return el;
+}
+const sysline = (text, err) => addEl(`<div class="sysline${err ? ' err' : ''}">${esc(text)}</div>`);
+function bubbleUser(text) { addEl(`<div class="msg user"><div class="bubble">${esc(text)}</div></div>`); }
+function bubbleAssistant(blocks) {
+  let html = '<div class="msg assistant"><div class="bubble">';
+  let hasText = false;
+  for (const b of blocks || []) {
+    if (b.type === 'text' && String(b.text || '').trim()) { hasText = true; html += esc(b.text); }
+    else if (b.type === 'reasoning' && String(b.text || '').trim()) {
+      html += `<details class="think"><summary>💭 思考过程</summary><div>${esc(b.text)}</div></details>`;
+    } else if (b.type === 'tool-call' || b.type === 'tool_use') {
+      html += `<div class="sysline">🔧 ${esc(b.name || '工具调用')}</div>`;
+    }
+  }
+  html += '</div></div>';
+  if (hasText || (blocks || []).some((b) => b.type === 'reasoning')) addEl(html);
+}
+function renderEvent(ev) {
+  const d = ev.data || {};
+  switch (ev.type) {
+    case 'user/message': {
+      const src = d.message && d.message.source;
+      if (src && src.kind === 'plugin' && src.plugin === 'compact') { sysline('📌 上下文压缩检查点（更早历史已折叠）'); break; }
+      const texts = (d.message && d.message.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+      if (texts) bubbleUser(texts);
+      break;
+    }
+    case 'assistant/message': bubbleAssistant(d.message && d.message.content); break;
+    case 'tool/result': {
+      const ok = JSON.stringify(d).includes('"error"') === false;
+      sysline((ok ? '🔧 工具完成' : '⚠️ 工具返回错误'));
+      break;
+    }
+    case 'compaction/start': sysline('🗜 上下文压缩开始（本地模型约 1~5 分钟）…'); break;
+    case 'compaction/end': sysline(d.error ? '🗜 压缩未完成：' + String(d.error.message || d.error) : '🗜 压缩完成', !!d.error); break;
+    case 'turn/end':
+      if (d.reason && d.reason.kind && d.reason.kind !== 'completed') sysline('回合结束：' + esc(d.reason.kind), true);
+      break;
+    case 'llm/error': case 'agent/error':
+      sysline('❌ ' + esc(String((d.error && d.error.message) || d.error || '请求错误')), true); break;
+  }
+}
+
+// ============ 轮询 ============
+function startPoll() { stopPoll(); tick(); M.pollTimer = setInterval(tick, 3000); }
+function stopPoll() { if (M.pollTimer) { clearInterval(M.pollTimer); M.pollTimer = null; } }
+let ticking = false;
+async function tick() {
+  if (ticking || document.hidden || !$('viewChat').offsetParent) return;
+  ticking = true;
+  try { await pollHistory(false); } catch (e) { /* 网络抖动静默重试 */ }
+  ticking = false;
+}
+async function pollHistory(first) {
+  if (!M.sessionId) return;
+  const h = await rpc('session.history', { sessionId: M.sessionId });
+  const events = (h.events || []).map((e) => e.event || e);
+  if (first) $('msgScroll').innerHTML = '';
+  let fresh = 0;
+  for (const ev of events) {
+    if (M.seenSeqs.has(ev.seq)) continue;
+    M.seenSeqs.add(ev.seq);
+    if (!first) { renderEvent(ev); fresh++; }
+  }
+  if (first) {
+    for (const ev of events) if (ev.type !== 'assistant/chunk' && ev.type !== 'reasoning-chunks') renderEvent(ev);
+  }
+  // 运行态：有 turn/start 且未闭合
+  const starts = events.filter((e) => e.type === 'turn/start').length;
+  const ends = events.filter((e) => e.type === 'turn/end').length;
+  const running = starts > ends;
+  if (running !== M.running) {
+    M.running = running;
+    $('btnSend').classList.toggle('stop', running);
+    $('btnSend').textContent = running ? '■' : '➤';
+    if (running) $('chipCtx').textContent = '生成中…';
+    else {
+      $('chipCtx').textContent = '空闲';
+      if (!first && fresh > 0) { refreshTasks(); }
+      try {
+        const v = await rpc('session.history', { sessionId: M.sessionId, maxMessages: 1 });
+        const cp = v && v.projections && v.projections.values && v.projections.values.contextPressure;
+        if (cp && cp.contextWindow) $('chipCtx').textContent = `上下文 ${Math.round((cp.projectedTokens || cp.pressureTokens || 0) / 1000)}K/${Math.round(cp.contextWindow / 1000)}K`;
+      } catch (e) { /* 投影不可用忽略 */ }
+    }
+  }
+}
+
+// ============ 发送 / 停止 ============
+async function send() {
+  if (!M.sessionId || !M.currentTask) return;
+  if (M.running) { // 停止
+    try { await rpc('session.cancel', { sessionId: M.sessionId }); toast('已请求停止'); } catch (e) { toast('停止失败：' + e.message); }
+    return;
+  }
+  const text = $('chatInput').value.trim();
+  if (!text) return;
+  $('chatInput').value = '';
+  $('chatInput').style.height = 'auto';
+  bubbleUser(text);
+  try {
+    await rpc('session.prompt', { sessionId: M.sessionId, mode: 'queue', content: [{ type: 'text', text }], clientTimeZone: 'Asia/Shanghai' });
+    M.running = true; $('btnSend').classList.add('stop'); $('btnSend').textContent = '■';
+    tick();
+  } catch (e) { sysline('❌ 发送失败：' + e.message, true); }
+}
+$('btnSend').addEventListener('click', send);
+$('chatInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !isReadonly(M.currentTask)) { e.preventDefault(); send(); }
+});
+$('chatInput').addEventListener('input', function () { this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 110) + 'px'; });
+
+// ============ 压缩（与桌面同语义：commands/execute /compact + 10 分钟冷却） ============
+$('btnCompact').addEventListener('click', async () => {
+  if (!M.sessionId) return;
+  const lc = M.lastCompact[M.sessionId];
+  if (lc && Date.now() - lc.t < 10 * 60 * 1000) {
+    toast(lc.failed ? `${Math.round((Date.now() - lc.t) / 60000)} 分钟前压缩未成功，可压缩内容已不足` : `${Math.round((Date.now() - lc.t) / 60000)} 分钟前刚压缩过，再压无收益`);
+    return;
+  }
+  if (M.running) { toast('请等当前回合结束后再压缩'); return; }
+  toast('压缩请求已提交（本地模型约 1~5 分钟）…');
+  try {
+    const v = await rpc('commands/execute', { args: { agentId: M.sessionId, line: '/compact' } });
+    const ok = v && v.result && v.result.kind === 'success';
+    M.lastCompact[M.sessionId] = { t: Date.now(), failed: !ok };
+    toast(ok ? '压缩完成' : '压缩未完成：' + ((v.result && v.result.text) || '见会话日志'));
+  } catch (e) {
+    M.lastCompact[M.sessionId] = { t: Date.now(), failed: true };
+    toast('压缩失败：' + e.message);
+  }
+});
+
+// ============ 启动 ============
+document.addEventListener('visibilitychange', () => { if (!document.hidden && $('viewChat').offsetParent) tick(); });
+refreshTasks();
+setInterval(() => { if (!$('viewChat').offsetParent && !document.hidden) refreshTasks(); }, 30000);
+</script>
+</body>
+</html>
