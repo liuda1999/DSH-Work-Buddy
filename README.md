@@ -158,32 +158,6 @@ DSH-WorkBuddy-<VERSION>.zip   # 如 DSH-WorkBuddy-0.3.1.zip
 
 ---
 
-## 版本策略
-
-- 整个 DSH Work Buddy 项目对外版本为 `0.3.1`（见 `VERSION`）。
-- `WorkBuddy-Web` 的 `package.json` 版本同步为 `0.3.1`。
-- `deepseek-harness`、`llm-wiki` 等组件保留其自身原有版本，不强制统一。
-
-### v0.3.1 更新要点
-
-- **MCP 管理安全审计修复**：env/headers/args 非字符串值在写入入口强制字符串化/拒绝（防 harness mcp-client schema 拒绝导致整个预设组合挂载失败、新会话全部创建失败），预设生成层兜底；`mcp.json` 损坏时先备份 `mcp.json.corrupt-<ts>` 再按空处理，避免开关操作用空表覆盖丢失全部注册。
-
-### v0.3.0 更新要点
-
-- **资源仓库新增 MCP 管理页**：第 5 个 Tab 列出 MCP 服务器（stdio / streamable-http），每服务器独立**启用开关**，支持新增/删除；开关即时同步到用户预设组合（standard-fix/universal），对新建会话生效。经本地 27B 会话与真实 A股 MCP 服务（a-share-platform）实测：9 个工具全量加载、模型真实调用返回实时行情。
-
-### v0.2.1 更新要点
-
-- `/compact` 10 分钟冷却拦截补全聊天输入路径（此前仅侧栏按钮路径）；工作区展示过滤对畸形条目判空防炸。
-
-### v0.2.0 更新要点
-
-- **「神秘工作区」顽疾根治**（三层防御）：项目外且无任务绑定的注册不进面板；启动时自动清扫目录已消失的幽灵注册（只解除注册，不碰磁盘数据）；存量 5 个全部清零。复发场景（伪造 /tmp 注册 → 隐藏 → 删目录重启 → 自愈）实测通过。
-
-### v0.1.999 更新要点
-
-- **本地模型上下文压缩失效根因修复**：真实根因是 llm-pi-ai 路由级 `contextWindow` 为无效键、默认 262144 被固化（阈值 209715 永不触发）；修正 qwen 路由声明窗口为 llama.cpp 实测 n_ctx=131072（settings.mutate 热加载），并新增用户预设 standard-fix（工具结果剪枝 2048/1024/512、溢出重试 2）与前端压缩冷却/带参拦截。实测自动压缩按新阈值触发、projectedTokens 9782→7371。
-
 ### v0.1.99 更新要点
 
 - **协议选择与生效解耦（方向 E）**：设置中心自定义 Provider 新增 `protocol` 字段持久化用户原始协议选择（auto / responses / completions / anthropic），与生效协议 `api` 字段解耦；运行期协议降级只改 `api`，设置中心列表与编辑表单始终回显用户原始选择，互不影响。
