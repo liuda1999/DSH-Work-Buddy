@@ -5805,8 +5805,15 @@ function chatOnEvent(ev, view) {
       }
       break;
     }
-    case 'compaction/start': chatAppend(chatNoteEl('上下文压缩开始…', false)); break;
-    case 'compaction/end': chatAppend(chatNoteEl('上下文压缩完成', false)); break;
+    case 'compaction/start': chatAppend(chatNoteEl('上下文压缩开始：正在摘要较早历史（本地模型约 1~5 分钟），请勿重复触发…', false)); break;
+    case 'compaction/end': {
+      // P1 缓解：记录最近一次压缩结果，供 /compact 冷却判定；失败时给明确文案而非含糊报错
+      const cErr = d && d.error ? d.error : null;
+      const cMsg = cErr ? String((cErr && cErr.message) || cErr) : '';
+      try { (SW.lastCompactEnd = SW.lastCompactEnd || {})[CHAT.sessionId] = { t: Date.now(), failed: !!cErr }; } catch (e) { /* 忽略 */ }
+      chatAppend(chatNoteEl(cErr ? `上下文压缩未完成：${esc(cMsg || '摘要未通过校验')}（对话内容未受影响；刚压缩过的会话再压一次通常无收益）` : '上下文压缩完成', !!cErr));
+      break;
+    }
     case 'llm/retry': chatAppend(chatNoteEl(`模型请求重试${d.reason ? '：' + esc(String(d.reason)) : ''}`, false)); break;
     case 'permission/preset':
       // 权限预设切换：更新投影 currentValue 并重绘 chip
@@ -6295,6 +6302,11 @@ async function sscSend() {
       || (CHAT.cmdCatalog || []).some(c => c && String(c.name).toLowerCase() === name)
       || (CHAT.skills || []).some(s => s && String(s.name).toLowerCase() === name);
     if (known) {
+      // P2 缓解：/compact 不支持参数（harness 会以 Usage 打回）；给可操作说明而非让用户撞墙
+      if (name === 'compact' && text.trim() !== '/compact') {
+        toast('/compact 暂不支持参数（如 “/compact 50k”）：压缩量由窗口自动决定（80% 触发、保留尾 16%）。直接发送 /compact 即可');
+        return;
+      }
       inp.value = '';
       sscAutoGrow();
       document.getElementById('sscMenu').hidden = true;
@@ -6927,7 +6939,7 @@ async function sscSelectPerm(value) {
 // 2026-08-29 实测：命令经 commands/execute 通道真实执行（/compact 实测压缩 30 条历史 ~30255 tokens）。
 // 注意：session.prompt 直接发 '/xxx' 文本不会触发命令（会当普通消息进模型）——命令必须走上述通道。
 const SSC_CMDS = [
-  { name: '/compact', desc: '压缩上下文——把较早的对话历史压缩为摘要，释放上下文窗口空间，让长对话可以继续', hint: '无参数' },
+  { name: '/compact', desc: '压缩上下文——把较早的对话历史压缩为摘要，释放上下文窗口空间，让长对话可以继续', hint: '无参数；刚压缩完再压无收益' },
   { name: '/permission', desc: '切换权限级别——控制智能体的文件访问范围与审批策略；无参数时查看当前级别与可用清单', hint: '<预设名>' },
   { name: '/plan', desc: '计划模式——进入后智能体先输出完整计划再执行，适合复杂任务；参数 off 退出，或附带补充消息', hint: '[off|消息]' },
   { name: '/feedback', desc: '会话反馈——记录你对本会话的反馈文本，供后续改进参考', hint: '<文本>' },
@@ -7590,6 +7602,17 @@ async function refreshSwCtx() {
 //   ✓ 压缩生效后投影 pressureTokens 不变，但 projectedTokens（下一轮实际发送量）大幅下降
 //     （实测 35404→6126）——上下文压力判定基准必须用 projectedTokens。
 async function execSessionCommand(sessionId, line) {
+  // P1 缓解：/compact 10 分钟冷却——刚完成过压缩时，可压缩池往往只剩上一条检查点，
+  // 再压必然空转（本地推理 1~2 分钟后报“摘要不小于被替换内容”）
+  if (line === '/compact') {
+    const lc = SW.lastCompactEnd && SW.lastCompactEnd[sessionId];
+    if (lc && Date.now() - lc.t < 10 * 60 * 1000) {
+      const mins = Math.max(1, Math.round((Date.now() - lc.t) / 60000));
+      throw new Error(lc.failed
+        ? `${mins} 分钟前的压缩未成功：可压缩内容已不足，重复压缩大概率仍无收益。建议继续对话，达到窗口 80% 时会自动压缩`
+        : `${mins} 分钟前刚完成压缩：可压缩池只剩上一次的摘要检查点，再压一次无收益（仍需等本地模型 1~2 分钟）。请继续对话累积新内容，或等自动压缩（窗口 80% 触发）`);
+    }
+  }
   // 与 chatExecCommand 相同的载荷；命令不依赖模型路由与附件
   const v = await wbRpc('commands/execute', { args: { agentId: sessionId, line } });
   if (v && v.result && v.result.kind === 'error') {
