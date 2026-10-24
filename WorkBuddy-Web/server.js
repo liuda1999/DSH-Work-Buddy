@@ -100,6 +100,42 @@ const isTaskWorkspace = (p) => {
   return TASK_ID_RE.test(base);
 };
 
+// 2026-10-25 根治「神秘工作区」：harness 工作区注册只增不减，任何项目数据根之外注册过的目录
+// （历史测试根 /tmp/wb-mode-minimal-*、历次发版 E2E 探针的 workspace.create）都会永久残留。
+// 判定是否项目受管根（data/workspaces 或 data/tasks）之下的注册：
+const isManagedWorkspaceRoot = (p) => {
+  const np = normPath(path.resolve(p));
+  return np === normPath(WS_DATA_DIR) || np.startsWith(normPath(WS_DATA_DIR) + '/')
+    || np === normPath(TASK_DATA_DIR) || np.startsWith(normPath(TASK_DATA_DIR) + '/');
+};
+
+// 幽灵注册自愈：项目外注册且磁盘目录已消失且无任务绑定 → 解除注册（不触碰任何磁盘数据）。
+// 目录仍存在的项目外注册不删（可能仍是活跃测试会话的 cwd），仅由列表展示层过滤。
+// 就绪钩子触发时 RPC 表面可能尚未可用（host.describe 先于 typert 网关），失败自动重试（5 次 × 5s）。
+let workspaceSweepAttempts = 0;
+async function sweepGhostWorkspaces() {
+  if (workspaceSweepAttempts >= 5) return;
+  workspaceSweepAttempts += 1;
+  try {
+    const v = await harnessRpc('workspace.list', {});
+    const bound = new Set((db.tasks || []).map((t) => t && t.workspaceId).filter(Boolean));
+    for (const w of v.items || []) {
+      if (!w || !w.workspaceId || !w.path) continue;
+      if (isTaskWorkspace(w.path) || isManagedWorkspaceRoot(w.path) || bound.has(w.workspaceId)) continue;
+      if (fs.existsSync(w.path)) continue;
+      try {
+        await harnessRpc('workspace.delete', { workspaceId: w.workspaceId });
+        console.log(`[DSH Work Buddy] 幽灵工作区已自动清扫（解除注册，磁盘未动）：${w.path}`);
+      } catch (e) {
+        console.warn(`[DSH Work Buddy] 幽灵工作区清扫失败（${w.path}）：${e.message}`);
+      }
+    }
+  } catch (_) {
+    // harness RPC 尚未就绪：延时重试（期间不阻塞启动）
+    setTimeout(() => { void sweepGhostWorkspaces(); }, 5000);
+  }
+}
+
 // dsh WorkspaceView → 前端工作区对象
 function mapWorkspace(w) {
   return {
@@ -506,6 +542,7 @@ function probeHarness() {
 async function ensureHarness() {
   if (await probeHarness()) {
     harnessUp = true;
+    void sweepGhostWorkspaces();
     if (!harnessProcess) {
       console.log(`[DSH Work Buddy] 检测到外部/遗留智能体实例（:${HARNESS_PORT}），将复用；若实例异常请先关闭 3080 端口进程再重启。`);
     } else {
@@ -550,6 +587,7 @@ async function spawnHarness() {
       harnessUp = true;
       harnessBooting = false;
       console.log(`[DSH Work Buddy] dsh 智能体服务就绪：http://${HARNESS_HOST}:${HARNESS_PORT}`);
+      void sweepGhostWorkspaces();
       return;
     }
     if (Date.now() > deadline) {
@@ -2143,13 +2181,18 @@ async function handleLocalApi(req, res, urlPath, params) {
       const v = await harnessRpc('workspace.list', {});
       // 顺带填充工作区路径缓存（任务目录解析 taskDirFor 使用）
       (v.items || []).forEach((w) => { if (w.workspaceId) workspaceCache.set(w.workspaceId, w.path); });
-      const workspaces = (v.items || []).filter((w) => !isTaskWorkspace(w.path)).map(mapWorkspace);
       // 每个工作区的任务项目数（按 task.workspaceId 归属统计）与全部任务数，供侧栏「工作区任务数」展示
       const taskCountByWs = {};
       (db.tasks || []).forEach((t) => {
         if (!t.workspaceId) return;
         taskCountByWs[t.workspaceId] = (taskCountByWs[t.workspaceId] || 0) + 1;
       });
+      // 展示过滤（2026-10-25）：任务专属目录不展示；项目受管根之外且无任务绑定的注册不展示
+      //（历史测试/E2E 探针留在 /tmp 等处的注册，注册本身保留供会话使用，仅不进入用户面板）
+      const workspaces = (v.items || [])
+        .filter((w) => !isTaskWorkspace(w.path))
+        .filter((w) => isManagedWorkspaceRoot(w.path) || (taskCountByWs[w.workspaceId] || 0) > 0)
+        .map(mapWorkspace);
       const totalTaskCount = (db.tasks || []).length;
       workspaces.forEach((w) => { w.taskCount = taskCountByWs[w.id] || 0; });
       return sendJson(res, 200, { workspaces, totalTaskCount, harnessUp: true });
