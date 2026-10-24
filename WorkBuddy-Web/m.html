@@ -58,9 +58,9 @@ button{font-family:inherit}
 .msg.assistant .bubble{background:var(--card);border:1px solid var(--border);border-bottom-left-radius:4px}
 .sysline{display:flex;align-items:center;gap:6px;color:var(--text2);font-size:11px;margin:8px 0;padding-left:4px}
 .sysline.err{color:#FCA5A5}
-.think{color:var(--text2);font-size:12px}
-.think summary{cursor:pointer;color:#7C8DB0}
-.think div{margin-top:4px;padding:8px 10px;background:#131C33;border-radius:8px;white-space:pre-wrap;max-height:180px;overflow-y:auto}
+.think{margin:0 0 6px}
+.think summary{cursor:pointer;color:#7C8DB0;font-size:11px}
+.think div{margin-top:4px;padding:8px 10px;background:#131C33;border-radius:8px;white-space:pre-wrap;max-height:200px;overflow-y:auto;font-size:12px}
 .readonly-bar{background:#3B1D24;color:#FCA5A5;font-size:12px;padding:8px 14px;text-align:center}
 /* 输入栏 */
 .inputbar{display:flex;gap:8px;align-items:flex-end;padding:8px 12px calc(env(safe-area-inset-bottom) + 10px);background:rgba(11,18,32,.95);border-top:1px solid var(--border)}
@@ -186,7 +186,7 @@ function fmtDeadline(t) {
 async function refreshTasks() {
   try {
     const d = await api('/api/tasks');
-    M.tasks = (d.tasks || []).filter((t) => !t.archived || t.status !== 'completed');
+    M.tasks = d.tasks || []; // 与桌面看板同口径：全部任务按服务端派生状态分组
     const by = { today: [], in_progress: [], completed: [], overdue: [] };
     M.tasks.forEach((t) => { (by[t.status] || by.today).push(t); });
     $('kToday').textContent = by.today.length;
@@ -254,7 +254,7 @@ async function openChat(task) {
   M.seenSeqs = new Set();
   M.running = false;
   $('chatTitle').textContent = task.title || task.id;
-  $('chatSub').textContent = STATUS_TEXT[task.status] || '' + (task.deadline ? ' · 期限 ' + fmtDeadline(task) : '');
+  $('chatSub').textContent = (STATUS_TEXT[task.status] || '') + (task.deadline ? ' · 期限 ' + fmtDeadline(task) : '');
   $('msgScroll').innerHTML = '<div class="sysline">正在连接会话…</div>';
   showView('chat');
   const ro = isReadonly(task);
@@ -296,18 +296,23 @@ function addEl(html) {
 const sysline = (text, err) => addEl(`<div class="sysline${err ? ' err' : ''}">${esc(text)}</div>`);
 function bubbleUser(text) { addEl(`<div class="msg user"><div class="bubble">${esc(text)}</div></div>`); }
 function bubbleAssistant(blocks) {
-  let html = '<div class="msg assistant"><div class="bubble">';
-  let hasText = false;
+  const thinks = [];
+  let body = '';
   for (const b of blocks || []) {
-    if (b.type === 'text' && String(b.text || '').trim()) { hasText = true; html += esc(b.text); }
-    else if (b.type === 'reasoning' && String(b.text || '').trim()) {
-      html += `<details class="think"><summary>💭 思考过程</summary><div>${esc(b.text)}</div></details>`;
-    } else if (b.type === 'tool-call' || b.type === 'tool_use') {
-      html += `<div class="sysline">🔧 ${esc(b.name || '工具调用')}</div>`;
+    if (b.type === 'text' && String(b.text || '').trim()) { body += esc(b.text); }
+    else if (b.type === 'reasoning' && String(b.text || '').trim()) { thinks.push(String(b.text)); }
+    else if (b.type === 'tool-call' || b.type === 'tool_use') {
+      body += `<div class="sysline">🔧 ${esc(b.name || '工具调用')}</div>`;
     }
   }
-  html += '</div></div>';
-  if (hasText || (blocks || []).some((b) => b.type === 'reasoning')) addEl(html);
+  if (!body && !thinks.length) return;
+  // 思考过程合并为单条紧凑折叠条（默认折叠，不占正文空间）
+  let html = '<div class="msg assistant"><div class="bubble">';
+  if (thinks.length) {
+    html += `<details class="think"><summary>💭 思考过程（${thinks.length}）</summary><div>${esc(thinks.join('\n\n'))}</div></details>`;
+  }
+  html += body + '</div></div>';
+  addEl(html);
 }
 function renderEvent(ev) {
   const d = ev.data || {};
@@ -333,6 +338,23 @@ function renderEvent(ev) {
     case 'llm/error': case 'agent/error':
       sysline('❌ ' + esc(String((d.error && d.error.message) || d.error || '请求错误')), true); break;
   }
+}
+
+// 上下文剩余空间 chip（每次轮询刷新；阈值变色：>60% 琥珀、>85% 红）
+async function updateCtxChip() {
+  try {
+    const v = await rpc('session.history', { sessionId: M.sessionId, maxMessages: 1 });
+    const cp = v && v.projections && v.projections.values && v.projections.values.contextPressure;
+    if (cp && cp.contextWindow) {
+      const used = cp.projectedTokens || cp.pressureTokens || 0;
+      const remain = Math.max(0, cp.contextWindow - used);
+      const pct = Math.round(used / cp.contextWindow * 100);
+      const el = $('chipCtx');
+      el.textContent = `${Math.round(used / 1000)}K/${Math.round(cp.contextWindow / 1000)}K · 剩 ${Math.round(remain / 1000)}K`;
+      el.style.color = pct > 85 ? '#FCA5A5' : pct > 60 ? '#FCD34D' : '';
+      el.title = `已用 ${pct}%；达到 80%（约 ${Math.round(cp.contextWindow * 0.8 / 1000)}K）自动压缩`;
+    }
+  } catch (e) { /* 投影不可用时保持原样 */ }
 }
 
 // ============ 轮询 ============
@@ -367,17 +389,9 @@ async function pollHistory(first) {
     M.running = running;
     $('btnSend').classList.toggle('stop', running);
     $('btnSend').textContent = running ? '■' : '➤';
-    if (running) $('chipCtx').textContent = '生成中…';
-    else {
-      $('chipCtx').textContent = '空闲';
-      if (!first && fresh > 0) { refreshTasks(); }
-      try {
-        const v = await rpc('session.history', { sessionId: M.sessionId, maxMessages: 1 });
-        const cp = v && v.projections && v.projections.values && v.projections.values.contextPressure;
-        if (cp && cp.contextWindow) $('chipCtx').textContent = `上下文 ${Math.round((cp.projectedTokens || cp.pressureTokens || 0) / 1000)}K/${Math.round(cp.contextWindow / 1000)}K`;
-      } catch (e) { /* 投影不可用忽略 */ }
-    }
+    if (!running && !first && fresh > 0) refreshTasks(); // 回合结束后任务状态可能变化
   }
+  await updateCtxChip();
 }
 
 // ============ 发送 / 停止 ============
