@@ -179,7 +179,17 @@ start.bat        # Windows：依赖/构建（首次较慢，幂等）→ 端口�
 - **测试需隔离环境**：用 `DSH_WB_PORT` / `DSH_WB_HARNESS_PORT` / `DSH_HOME` 起第二个实例（不影响现网）。
 
 ### 7.5 版本升级
-版本号同步修改 5 处：`VERSION`、`WorkBuddy-Web/package.json`、`start.bat`（v 前缀 banner）、`start.sh`（v 前缀 banner）、`README.md`（版本/目录/分发包名/版本策略）。提交 git：`git add` 相关文件后 commit。
+版本号同步修改 4 处：`VERSION`、`WorkBuddy-Web/package.json`、`start.bat`（v 前缀 banner）、`start.sh`（v 前缀 banner）；README 版本号与目录树一并同步（版本策略节已移除，版本信息由 GitHub Releases 承载）。提交 git：`git add` 相关文件后 commit。
+
+### 7.6 检索策略：FastEmbed 语义检索为既定降级现状（2026-10-25 决策记录）
+
+llm-wiki 的混合检索依赖 FastEmbed 嵌入模型，因 HF 下载在内网不可用而降级为**词法 BM25**（`wiki_search.py --no-embed`），网关 `/api/wiki/search` 同样走词法兜底。**这是既定现状而非缺陷**：本地均为轻量文本数据（当前 9 篇），词法检索实测完全满足（中文命中、章节级 snippet、邻居导航），**暂不启用语义检索、不做修复**。若未来文档规模显著增长或需要语义召回，再评估离线嵌入模型方案。资源仓库的「知识图谱」与检索无关（基于磁盘文档真实提取，增删即时生效，2026-10-25 已专项验证：节点/章节/mentions 与磁盘一一对应，写入即入图、删除即出图）。
+
+### 7.7 进程与内存基线（2026-10-25 体检，运行 28 分钟采样）
+
+- **进程形态**：常驻仅一对进程——网关 `node server.js`（systemd `dsh-workbuddy.service` 托管）与其子进程 `node --import tsx/esm apps/cli/src/bin.ts web`（harness）。esbuild service 仅在构建时短暂出现。
+- **内存基线**：网关 RSS ~106MB（启动峰值 ~279MB，属 26 任务恢复期，正常回落）；harness RSS ~420MB（大上下文会话时峰值可达 ~880MB，回合结束回落）。`VmSize` 数十 GB 属 Node/V8 虚拟地址空间预留，**不是实际占用**，勿据此报警。
+- **泄漏判定方法**：空闲静置 ≥3 分钟两次采样——健康表现为 RSS 持平或下降（本次实测网关 115→106MB、harness 436→435MB，HWM 无增长）；journal 全历史零 OOM/heap 告警；全系统无僵尸进程。若 RSS 随空闲时间单调增长且 HWM 持续抬升，才可判定泄漏。
 
 ---
 

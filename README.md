@@ -218,3 +218,4 @@ DSH-WorkBuddy-<VERSION>.zip   # 如 DSH-WorkBuddy-0.3.1.zip
 4. 平台支持：Windows / macOS / Linux 均可运行。智能体沙箱按平台自动选择（Windows 无沙箱、Linux 用 landlock/bwrap、macOS 用系统 seatbelt）；网关优雅关闭在 Windows 用 `taskkill` 杀进程树、其他平台用 `SIGKILL` 兜底。
 5. 智能体真实对话需要 DeepSeek API Key，请通过环境变量 `DEEPSEEK_API_KEY` 或控制台「设置中心 → DeepSeek 大模型配置」配置；本仓库不包含任何真实密钥。
 6. 视频背景文件位于 `WorkBuddy-Web/card-bg/`，播放速度已在 `index.html` 中设置为 0.5 倍。
+7. Wiki 检索为**词法 BM25**（`wiki_search.py --no-embed` 与网关 `/api/wiki/search`）：FastEmbed 语义检索因内网无法下载嵌入模型而降级，属既定现状——本地轻量文本数据暂不需要语义检索；资源仓库「知识图谱」不受影响（基于磁盘文档真实提取）。
