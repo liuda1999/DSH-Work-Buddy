@@ -2190,7 +2190,7 @@ async function handleLocalApi(req, res, urlPath, params) {
       // 展示过滤（2026-10-25）：任务专属目录不展示；项目受管根之外且无任务绑定的注册不展示
       //（历史测试/E2E 探针留在 /tmp 等处的注册，注册本身保留供会话使用，仅不进入用户面板）
       const workspaces = (v.items || [])
-        .filter((w) => !isTaskWorkspace(w.path))
+        .filter((w) => w && w.path && !isTaskWorkspace(w.path))
         .filter((w) => isManagedWorkspaceRoot(w.path) || (taskCountByWs[w.workspaceId] || 0) > 0)
         .map(mapWorkspace);
       const totalTaskCount = (db.tasks || []).length;

@@ -6273,6 +6273,17 @@ function sscAutoGrow() {
 // 会当普通消息进模型 turn）；命令卡由 command/run|command/done 事件渲染，此处无需乐观渲染
 async function chatExecCommand(line) {
   if (!CHAT.sessionId) { toast('智能体未连接'); return null; }
+  // P1 缓解：聊天输入路径同样适用 /compact 10 分钟冷却（与按钮路径 execSessionCommand 同规则）
+  if (line === '/compact') {
+    const lc = SW.lastCompactEnd && SW.lastCompactEnd[CHAT.sessionId];
+    if (lc && Date.now() - lc.t < 10 * 60 * 1000) {
+      const mins = Math.max(1, Math.round((Date.now() - lc.t) / 60000));
+      toast('暂不执行 /compact：' + (lc.failed
+        ? mins + ' 分钟前的压缩未成功，可压缩内容已不足，重复压缩大概率无收益'
+        : mins + ' 分钟前刚完成压缩，可压缩池只剩摘要检查点，再压无收益。请继续对话，窗口到 80% 会自动压缩'));
+      return null;
+    }
+  }
   try {
     const v = await wbRpc('commands/execute', { args: { agentId: CHAT.sessionId, line } });
     if (v && v.result && v.result.kind === 'error') {
