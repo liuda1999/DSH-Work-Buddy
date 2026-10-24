@@ -2391,6 +2391,30 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 .rs-pane-head .rs-pane-note{font-size:12px;color:var(--text-4);letter-spacing:0.3px}
 .rs-pane-head .btn{margin-left:auto;height:32px;padding:0 12px;font-size:12.5px}
 .rs-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.wb-switch{position:relative;display:inline-block;width:36px;height:20px;flex:none;cursor:pointer}
+.wb-switch input{opacity:0;width:0;height:0;position:absolute}
+.wb-slider{position:absolute;inset:0;background:#CBD5E1;border-radius:999px;transition:background .18s}
+.wb-slider::before{content:"";position:absolute;left:2px;top:2px;width:16px;height:16px;background:#fff;border-radius:50%;box-shadow:0 1px 2px rgba(0,0,0,.2);transition:transform .18s}
+.wb-switch input:checked+.wb-slider{background:#22C55E}
+.wb-switch input:checked+.wb-slider::before{transform:translateX(16px)}
+.mcp-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+.mcp-hint{font-size:12px;color:#64748B;line-height:1.5}
+.mcp-add{border:1px solid #CBD5E1;background:#fff;border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;white-space:nowrap}
+.mcp-add:hover{border-color:#6366F1;color:#6366F1}
+.mcp-card{margin-bottom:10px}
+.mcp-head{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.mcp-name{font-weight:600;font-size:14px}
+.mcp-meta{font-size:12px;color:#64748B;margin-top:4px;word-break:break-all}
+.mcp-foot{display:flex;justify-content:space-between;align-items:center;margin-top:8px}
+.mcp-state{font-size:12px;padding:2px 8px;border-radius:999px}
+.mcp-state.on{background:#DCFCE7;color:#15803D}
+.mcp-state.off{background:#F1F5F9;color:#94A3B8}
+.mcp-del{border:1px solid #FECACA;background:#fff;color:#DC2626;border-radius:6px;padding:3px 10px;font-size:12px;cursor:pointer}
+.mcp-del:hover{background:#FEF2F2}
+.mcp-form-row{margin-bottom:10px}
+.mcp-form-row label{display:block;font-size:12px;color:#475569;margin-bottom:4px}
+.mcp-form-row input,.mcp-form-row select{width:100%;box-sizing:border-box;border:1px solid #CBD5E1;border-radius:8px;padding:8px 10px;font-size:13px}
+.mcp-form-note{font-size:12px;color:#94A3B8;margin-top:6px;line-height:1.5}
 .rs-card{
   position:relative;overflow:hidden;
   background:linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015));
@@ -3341,6 +3365,7 @@ select.form-input option{background:#12161F;color:var(--text-2)}
             <div class="tab active" data-tab="plugins">插件 <span class="badge" id="rsPluginsBadge">—</span></div>
             <div class="tab" data-tab="skills">技能 <span class="badge" id="rsSkillsBadge">—</span></div>
             <div class="tab" data-tab="agent">智能体管理 <span class="badge" id="rsTplBadge">—</span></div>
+            <div class="tab" data-tab="mcp">MCP <span class="badge" id="rsMcpBadge">—</span></div>
             <div class="tab" data-tab="wiki">Wiki 文档 <span class="badge" id="rsDocsBadge">—</span></div>
           </div>
           <!-- 插件 Tab：dsh web __DSH_BOOT__ 插件清单 -->
@@ -3350,6 +3375,7 @@ select.form-input option{background:#12161F;color:var(--text-2)}
           <!-- 智能体管理 Tab -->
           <div class="rs-pane" id="rsPaneAgent" hidden><div class="rs-empty"><div class="rs-empty-title">加载中...</div></div></div>
           <!-- Wiki 文档 Tab -->
+          <div class="rs-pane" id="rsPaneMcp" hidden><div class="rs-empty"><div class="rs-empty-title">加载中...</div></div></div>
           <div class="rs-pane" id="rsPaneWiki" hidden><div class="rs-empty"><div class="rs-empty-title">加载中...</div></div></div>
         </div>
       </div>
@@ -4267,6 +4293,36 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 </aside>
 
 <!-- ===== 弹窗：智能体管理（新建 / 编辑） ===== -->
+<div class="modal-mask" id="modal-rs-mcp">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>新增 MCP 服务器</h3>
+      <div class="modal-close" data-close title="关闭">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div class="mcp-form-row"><label>名称 serverName *</label><input id="rsMcpName" placeholder="如 filesystem（字母/数字/_/-，≤32 位）"></div>
+      <div class="mcp-form-row"><label>传输方式 *</label>
+        <select id="rsMcpTransport"><option value="stdio">stdio（本地子进程）</option><option value="streamable-http">streamable-http（远程端点）</option></select>
+      </div>
+      <div id="rsMcpStdioFields">
+        <div class="mcp-form-row"><label>命令 command *</label><input id="rsMcpCommand" placeholder="如 npx / uvx / node"></div>
+        <div class="mcp-form-row"><label>参数 args</label><input id="rsMcpArgs" placeholder="空格分隔，如 -y @modelcontextprotocol/server-filesystem /path"></div>
+        <div class="mcp-form-row"><label>工作目录 cwd</label><input id="rsMcpCwd" placeholder="可选，默认空"></div>
+        <div class="mcp-form-row"><label>环境变量 env</label><input id="rsMcpEnv" placeholder='可选，JSON：{"API_KEY":"..."}'></div>
+      </div>
+      <div id="rsMcpHttpFields" hidden>
+        <div class="mcp-form-row"><label>端点 URL *</label><input id="rsMcpUrl" placeholder="https://example.com/mcp"></div>
+      </div>
+      <div class="mcp-form-note">保存后立即写入注册表并同步到用户预设组合；开关与新增均只对<strong>新建会话</strong>生效。</div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>取消</button>
+      <button class="btn btn-primary" id="rsMcpSave">保存</button>
+    </div>
+  </div>
+</div>
 <div class="modal-mask" id="modal-rs-tpl">
   <div class="modal">
     <div class="modal-head">
@@ -8999,6 +9055,8 @@ const RS = {
   tplEditId: null,         // 模板弹窗：null=新建，否则为编辑中的模板 id
   graphNodeByPath: null,   // 图谱节点 path→node 索引（文档行真实关联标记）
   graphEdgeCount: null,    // 图谱边计数（subject/object → 次数）
+  mcp: [],                 // MCP 清单（/api/resources/mcp，wb 自建注册表）
+  mcpRuntime: null,        // 运行态 {serverName: 工具数}（tools.list 不可用为 null）
 };
 const RS_DOC_TAGS = [];    // 新建文档弹窗的 tags chips 状态
 const RS_GRAPH = { nodes: [], edges: [], nodeMap: new Map(), focusNodeId: null, category: null, repo: null };
@@ -9093,12 +9151,25 @@ async function ensureRsGraphData() {
   return _rsGraphLoading;
 }
 
-// 进入资源仓库页：四个分区并行加载
+// MCP 清单（wb 自建注册表；开关对新建会话生效）
+async function loadRsMcp() {
+  try {
+    const data = await fetchJson('/api/resources/mcp');
+    RS.mcp = Array.isArray(data.servers) ? data.servers : [];
+    RS.mcpRuntime = data.runtime || null;
+  } catch (e) {
+    RS.mcp = [];
+    RS.mcpRuntime = null;
+  }
+  document.getElementById('rsMcpBadge').textContent = String(RS.mcp.length);
+}
+
+// 进入资源仓库页：各分区并行加载
 async function loadResourcesPage() {
   document.getElementById('rsModeBadge').textContent = '加载中...';
-  await Promise.all([loadRsPlugins(), loadRsSkills(), loadRsTemplates(), loadRsDocs()]);
+  await Promise.all([loadRsPlugins(), loadRsSkills(), loadRsTemplates(), loadRsDocs(), loadRsMcp()]);
   document.getElementById('rsModeBadge').textContent =
-    `${RS.plugins.length} 插件 · ${RS.skills.length} 技能 · ${RS.templates.length} 模板 · ${RS.docs.length} 篇文档`;
+    `${RS.plugins.length} 插件 · ${RS.skills.length} 技能 · ${RS.templates.length} 模板 · ${RS.mcp.length} MCP · ${RS.docs.length} 篇文档`;
   renderRsPane();
 }
 
@@ -10091,15 +10162,140 @@ document.getElementById('rsTabs').addEventListener('click', e => {
 });
 
 function renderRsPane() {
-  ['plugins', 'skills', 'agent', 'wiki'].forEach(t => {
+  ['plugins', 'skills', 'agent', 'mcp', 'wiki'].forEach(t => {
     const pane = document.getElementById('rsPane' + t.charAt(0).toUpperCase() + t.slice(1));
     pane.hidden = t !== RS.tab;
   });
   if (RS.tab === 'plugins') renderRsPluginsPane();
   else if (RS.tab === 'skills') renderRsSkillsPane();
   else if (RS.tab === 'agent') renderRsAgentPane();
+  else if (RS.tab === 'mcp') renderRsMcpPane();
   else renderRsWikiPane();
 }
+
+// ---------- MCP Tab（wb 自建注册表：列表 + 启用开关 + 增删；开关经预设同步对新建会话生效） ----------
+function renderRsMcpPane() {
+  const pane = document.getElementById('rsPaneMcp');
+  const cards = RS.mcp.map((s) => {
+    const rt = RS.mcpRuntime && RS.mcpRuntime[s.serverName];
+    const rtText = rt === undefined ? '' : ` · ${rt} 个工具已注册`;
+    const transport = s.transport === 'stdio'
+      ? `stdio · ${esc(s.command || '')}${(s.args || []).length ? ' ' + esc(s.args.join(' ')) : ''}`
+      : `HTTP · ${esc(s.url || '')}`;
+    return `
+    <div class="rs-card mcp-card" data-name="${esc(s.serverName)}">
+      <div class="mcp-head">
+        <div class="mcp-name">${esc(s.serverName)}</div>
+        <label class="wb-switch" title="${s.enabled ? '已启用（点击停用）' : '已停用（点击启用）'}">
+          <input type="checkbox" class="mcp-toggle" data-name="${esc(s.serverName)}" ${s.enabled ? 'checked' : ''}>
+          <span class="wb-slider"></span>
+        </label>
+      </div>
+      <div class="mcp-meta">${esc(s.transport)} · ${transport}${rtText}</div>
+      <div class="mcp-foot">
+        <span class="mcp-state ${s.enabled ? 'on' : 'off'}">${s.enabled ? '已启用 · 新建会话加载' : '已停用'}</span>
+        <button class="mcp-del" data-name="${esc(s.serverName)}">删除</button>
+      </div>
+    </div>`;
+  }).join('');
+  pane.innerHTML = `
+    <div class="mcp-toolbar">
+      <div class="mcp-hint">MCP 服务器由 wb 注册表管理；开关只对<strong>新建会话</strong>生效（组合在会话创建时挂载）。</div>
+      <button class="mcp-add" id="rsMcpAdd">＋ 新增 MCP</button>
+    </div>
+    ${cards || '<div class="rs-empty"><div class="rs-empty-title">暂无 MCP 服务器</div><div class="rs-empty-sub">点击右上角「新增 MCP」接入第一个服务器</div></div>'}`;
+}
+
+// MCP 开关/删除/新增（pane 内事件委托）
+document.getElementById('rsPaneMcp').addEventListener('click', async (e) => {
+  const addBtn = e.target.closest('#rsMcpAdd');
+  if (addBtn) { openRsMcpModal(); return; }
+  const del = e.target.closest('.mcp-del');
+  if (del) {
+    const name = del.dataset.name;
+    if (!(await wbConfirm({ title: '删除 MCP', message: `确定删除 MCP 服务器「${name}」？
+（仅移出注册表与预设组合，不删除任何外部服务）`, okText: '删除' }))) return;
+    try {
+      await mcpJson('/api/resources/mcp/' + encodeURIComponent(name), { method: 'DELETE' });
+      toast(`MCP「${name}」已删除（新建会话不再加载）`);
+      await loadRsMcp(); renderRsMcpPane();
+    } catch (err) { toast('删除失败：' + err.message); }
+  }
+});
+document.getElementById('rsPaneMcp').addEventListener('change', async (e) => {
+  const sw = e.target.closest('.mcp-toggle');
+  if (!sw) return;
+  const name = sw.dataset.name;
+  try {
+    const r = await mcpJson('/api/resources/mcp/' + encodeURIComponent(name) + '/toggle', { method: 'POST', body: JSON.stringify({}) });
+    toast(`MCP「${name}」已${r.enabled ? '启用' : '停用'}（${r.effective || '新建会话生效'}）`);
+    await loadRsMcp(); renderRsMcpPane();
+  } catch (err) {
+    toast('切换失败：' + err.message);
+    sw.checked = !sw.checked; // 回滚 UI
+  }
+});
+
+// MCP 新增弹窗
+const modalRsMcp = document.getElementById('modal-rs-mcp');
+// MCP 请求助手：与 fetchJson 同形，但服务端 {error:{message}} 能取到可读文案
+async function mcpJson(url, options = {}) {
+  const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
+  let body = null;
+  try { body = await res.json(); } catch { /* 非 JSON 响应体忽略 */ }
+  if (!res.ok) {
+    const e = body && body.error;
+    const msg = e ? (typeof e === 'string' ? e : (e.message || JSON.stringify(e).slice(0, 120))) : `请求失败（HTTP ${res.status}）`;
+    throw new Error(msg);
+  }
+  return body;
+}
+// modal 关闭：data-close 按钮与遮罩点击
+modalRsMcp.querySelectorAll('[data-close]').forEach((el) => el.addEventListener('click', () => hideModal(modalRsMcp)));
+modalRsMcp.addEventListener('click', (e) => { if (e.target === modalRsMcp) hideModal(modalRsMcp); });
+function openRsMcpModal() {
+  document.getElementById('rsMcpName').value = '';
+  document.getElementById('rsMcpTransport').value = 'stdio';
+  document.getElementById('rsMcpCommand').value = '';
+  document.getElementById('rsMcpArgs').value = '';
+  document.getElementById('rsMcpCwd').value = '';
+  document.getElementById('rsMcpUrl').value = '';
+  document.getElementById('rsMcpEnv').value = '';
+  syncRsMcpTransport();
+  showModal(modalRsMcp);
+}
+function syncRsMcpTransport() {
+  const isStdio = document.getElementById('rsMcpTransport').value === 'stdio';
+  document.getElementById('rsMcpStdioFields').hidden = !isStdio;
+  document.getElementById('rsMcpHttpFields').hidden = isStdio;
+}
+document.getElementById('rsMcpTransport').addEventListener('change', syncRsMcpTransport);
+document.getElementById('rsMcpSave').addEventListener('click', async () => {
+  const payload = {
+    serverName: document.getElementById('rsMcpName').value.trim(),
+    transport: document.getElementById('rsMcpTransport').value,
+  };
+  if (payload.transport === 'stdio') {
+    payload.command = document.getElementById('rsMcpCommand').value.trim();
+    payload.args = document.getElementById('rsMcpArgs').value.trim();
+    payload.cwd = document.getElementById('rsMcpCwd').value.trim();
+    const envRaw = document.getElementById('rsMcpEnv').value.trim();
+    if (envRaw) {
+      try { payload.env = JSON.parse(envRaw); } catch { toast('环境变量必须是合法 JSON（如 {"KEY":"value"}）'); return; }
+    }
+  } else {
+    payload.url = document.getElementById('rsMcpUrl').value.trim();
+  }
+  try {
+    await mcpJson('/api/resources/mcp', { method: 'POST', body: JSON.stringify(payload) });
+    hideModal(modalRsMcp);
+    toast(`MCP「${payload.serverName}」已新增并启用（新建会话加载）`);
+    await loadRsMcp();
+    RS.tab = 'mcp';
+    document.querySelectorAll('#rsTabs .tab').forEach(x => x.classList.toggle('active', x.dataset.tab === 'mcp'));
+    renderRsMcpPane();
+  } catch (err) { toast('新增失败：' + err.message); }
+});
 
 // ---------- 插件 Tab（dsh 智能体运行时插件：__DSH_BOOT__ 实时清单，只读展示） ----------
 function renderRsPluginsPane() {

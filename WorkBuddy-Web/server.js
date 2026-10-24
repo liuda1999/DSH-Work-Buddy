@@ -2950,6 +2950,83 @@ function findArchiveSessionDir(groupName, taskId) {
   }
 
   // 插件 Tab：从 dsh 首页引导数据（window.__DSH_BOOT__.entries）提取浏览器插件清单
+  // ---------- MCP 管理（2026-10-25 新增） ----------
+  // wb 自建 MCP 注册表（data/mcp.json），开关切换时同步写入用户预设组合（~/.dsh/.agent-presets/）。
+  // harness 的 mcp-client 是按实例挂载的 cordis 插件，无 settings/RPC 动态通道；会话的 agent 组合
+  // 由 preset 文件在创建时挂载（discovery 每次重读磁盘），因此开关对"新建会话"生效，存量会话不变。
+  const MCP_FILE = path.join(DATA_DIR, 'mcp.json');
+  const MCP_PRESET_TARGETS = ['standard-fix', 'universal']; // wb 管理的用户预设（shipped 预设只读不可写）
+  const MCP_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
+  function loadMcpServers() {
+    try { return JSON.parse(fs.readFileSync(MCP_FILE, 'utf8')).servers || []; } catch (_) { return []; }
+  }
+  function saveMcpServers(servers) {
+    const tmp = MCP_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify({ version: 1, updatedAt: new Date().toISOString(), servers }, null, 2));
+    fs.renameSync(tmp, MCP_FILE);
+  }
+  // 校验一个 MCP 条目；返回错误文案或 null
+  function validateMcpEntry(e, existing) {
+    if (!e || !MCP_NAME_RE.test(String(e.serverName || ''))) {
+      return 'serverName 必填，且只能含字母/数字/下划线/连字符（≤32 位）';
+    }
+    if (existing.some((x) => x.serverName === e.serverName)) return `serverName "${e.serverName}" 已存在`;
+    if (e.transport === 'stdio') {
+      if (!String(e.command || '').trim()) return 'stdio 传输必须提供 command';
+    } else if (e.transport === 'streamable-http') {
+      if (!/^https?:\/\//.test(String(e.url || ''))) return 'streamable-http 传输必须提供 http(s) URL';
+    } else {
+      return 'transport 必须是 stdio 或 streamable-http';
+    }
+    return null;
+  }
+  // 把 enabled 的 MCP 生成为组合行（YAML；标量一律 JSON.stringify，YAML 是 JSON 超集，免转义坑）
+  function mcpPresetRows(servers) {
+    const lines = ['# BEGIN wb-mcp（WorkBuddy MCP 管理自动生成；手动改动会被下次开关覆盖）'];
+    for (const s of servers.filter((x) => x.enabled)) {
+      lines.push(`- id: mcp-${s.serverName}`);
+      lines.push(`  name: '@deepseek-ai/dsh-mcp-client'`);
+      lines.push(`  config:`);
+      lines.push(`    transport: ${s.transport}`);
+      lines.push(`    serverName: ${JSON.stringify(s.serverName)}`);
+      if (s.transport === 'stdio') {
+        lines.push(`    command: ${JSON.stringify(s.command)}`);
+        lines.push(`    args: ${JSON.stringify(Array.isArray(s.args) ? s.args : [])}`);
+        lines.push(`    env: ${JSON.stringify(s.env && Object.keys(s.env).length ? s.env : {})}`);
+        lines.push(`    cwd: ${JSON.stringify(s.cwd || '')}`);
+      } else {
+        lines.push(`    url: ${JSON.stringify(s.url)}`);
+        lines.push(`    headers: ${JSON.stringify(s.headers && Object.keys(s.headers).length ? s.headers : {})}`);
+      }
+    }
+    lines.push('# END wb-mcp');
+    return lines.join('\n');
+  }
+  // 同步到用户预设：幂等替换 BEGIN/END 标记块；文件不存在则跳过
+  function syncMcpPresets(servers) {
+    const block = mcpPresetRows(servers);
+    const home = process.env.HOME || process.env.USERPROFILE || '';
+    for (const id of MCP_PRESET_TARGETS) {
+      const file = path.join(home, '.dsh', '.agent-presets', id, 'agent.cordis.yml');
+      if (!fs.existsSync(file)) continue;
+      const text = fs.readFileSync(file, 'utf8');
+      const begin = text.indexOf('# BEGIN wb-mcp');
+      let next;
+      if (begin >= 0) {
+        const end = text.indexOf('# END wb-mcp', begin);
+        const tail = end >= 0 ? text.slice(text.indexOf('\n', end) + 1) : '';
+        next = text.slice(0, begin).replace(/\n+$/, '\n') + block + '\n' + tail;
+      } else {
+        next = text.replace(/\n+$/, '\n') + '\n' + block + '\n';
+      }
+      if (next !== text) {
+        const tmp = file + '.tmp';
+        fs.writeFileSync(tmp, next);
+        fs.renameSync(tmp, file);
+      }
+    }
+  }
+
   if (urlPath === '/api/resources/plugins' && req.method === 'GET') {
     let plugins = null;
     try {
@@ -2972,6 +3049,68 @@ function findArchiveSessionDir(groupName, taskId) {
   if (urlPath === '/api/resources/plugins/toggle' && req.method === 'POST') {
     // 插件启停尚未实现：诚实返回 501，不再伪装成功
     return sendJson(res, 501, { error: { code: 'not-implemented', message: '插件启停功能尚未实现' } });
+  }
+  // MCP：列表（含运行态工具数——尝试 tools.list RPC 统计 mcp__<serverName>__ 前缀；失败则不带 runtime）
+  if (urlPath === '/api/resources/mcp' && req.method === 'GET') {
+    const servers = loadMcpServers();
+    let runtime = null;
+    try {
+      const sessionId = await getCatalogSession();
+      const v = await harnessRpc('tools.list', { sessionId });
+      const names = (v.tools || v.items || []).map((x) => x.name || x.id || '');
+      runtime = {};
+      for (const s of servers) {
+        runtime[s.serverName] = names.filter((n) => n.startsWith(`mcp__${s.serverName}__`)).length;
+      }
+    } catch (_) { /* tools.list 不可用：运行态留空，不影响管理功能 */ }
+    return sendJson(res, 200, { servers, runtime, presets: MCP_PRESET_TARGETS });
+  }
+  // MCP：新增
+  if (urlPath === '/api/resources/mcp' && req.method === 'POST') {
+    const body = await readBody(req);
+    const entry = {
+      serverName: String(body.serverName || '').trim(),
+      transport: String(body.transport || '').trim(),
+      command: String(body.command || '').trim(),
+      args: Array.isArray(body.args) ? body.args.map(String) : String(body.args || '').split(/\s+/).filter(Boolean),
+      env: (body.env && typeof body.env === 'object' && !Array.isArray(body.env)) ? body.env : undefined,
+      cwd: String(body.cwd || '').trim() || undefined,
+      url: String(body.url || '').trim(),
+      headers: (body.headers && typeof body.headers === 'object' && !Array.isArray(body.headers)) ? body.headers : undefined,
+      enabled: true,
+      createdAt: new Date().toISOString(),
+    };
+    const servers = loadMcpServers();
+    const err = validateMcpEntry(entry, servers);
+    if (err) return sendJson(res, 400, { error: { message: err } });
+    for (const k of ['env', 'cwd', 'headers']) if (entry[k] === undefined) delete entry[k];
+    if (entry.transport === 'streamable-http') { delete entry.command; delete entry.args; delete entry.cwd; }
+    servers.push(entry);
+    saveMcpServers(servers);
+    syncMcpPresets(servers);
+    return sendJson(res, 200, { server: entry });
+  }
+  // MCP：开关（enabled 翻转 → 同步预设；对新建会话生效）
+  if (urlPath.startsWith('/api/resources/mcp/') && urlPath.endsWith('/toggle') && req.method === 'POST') {
+    const name = decodeURIComponent(urlPath.split('/')[4] || '');
+    const servers = loadMcpServers();
+    const s = servers.find((x) => x.serverName === name);
+    if (!s) return sendJson(res, 404, { error: { message: `MCP "${name}" 不存在` } });
+    s.enabled = !s.enabled;
+    s.updatedAt = new Date().toISOString();
+    saveMcpServers(servers);
+    syncMcpPresets(servers);
+    return sendJson(res, 200, { serverName: s.serverName, enabled: s.enabled, effective: '新建会话生效' });
+  }
+  // MCP：删除
+  if (urlPath.startsWith('/api/resources/mcp/') && req.method === 'DELETE') {
+    const name = decodeURIComponent(urlPath.split('/')[4] || '');
+    const servers = loadMcpServers();
+    const next = servers.filter((x) => x.serverName !== name);
+    if (next.length === servers.length) return sendJson(res, 404, { error: { message: `MCP "${name}" 不存在` } });
+    saveMcpServers(next);
+    syncMcpPresets(next);
+    return sendJson(res, 200, { success: true });
   }
   // 技能 Tab：对接 dsh skill.list（按目录会话的项目根解析，懒建 + 固定 sessionId 幂等）
   // 2026-09-05：附带 pending（任务/工作区目录中已学习但未安装到 .dsh/skills 共享根的技能，供一键安装）
