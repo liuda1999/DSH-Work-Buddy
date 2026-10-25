@@ -1,0 +1,23 @@
+# DSH Work Buddy Web 开机自启服务（版本受控模板：worke/deploy/）
+# 由 deploy/install-service.sh 以实际路径填充 @REPO_DIR@ / @DEPLOY_DIR@ 后写入
+# /etc/systemd/system/dsh-workbuddy.service。版本号不写入本文件（由 GitHub Releases 承载）。
+
+[Unit]
+Description=DSH Work Buddy Web (LAN autostart)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=liuda
+Group=liuda
+Environment=DSH_WB_HOST=0.0.0.0
+ExecStart=/bin/bash @DEPLOY_DIR@/workbuddy-autostart.sh
+WorkingDirectory=@REPO_DIR@
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

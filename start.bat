@@ -7,7 +7,9 @@ set "HARNESS=%ROOT%deepseek-harness\deepseek-harness-master"
 set "WIKI=%ROOT%llm-wiki\project"
 
 echo ==========================================
-echo   DSH Work Buddy 一键启动  (v0.1.99)
+set "WBV=dev"
+if exist "%~dp0VERSION" (set /p WBV=<"%~dp0VERSION")
+echo   DSH Work Buddy 一键启动  (v%WBV%)
 echo   默认端口: 8765（支持同局域网跨设备访问）
 echo ==========================================
 echo.
