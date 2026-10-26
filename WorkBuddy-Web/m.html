@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="theme-color" content="#0B1220">
+<link rel="icon" href="logo.jpg" />
 <title>DSH Work Buddy · 移动端</title>
 <style>
 :root{
@@ -19,6 +20,7 @@ button{font-family:inherit}
 /* ── 顶栏 ── */
 .topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:10px;padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;background:rgba(11,18,32,.92);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
 .topbar h1{font-size:16px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topbar-logo{width:24px;height:24px;border-radius:6px;object-fit:cover;flex:none}
 .topbar .sub{font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .iconbtn{border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:8px;padding:6px 10px;font-size:13px;cursor:pointer;flex:none}
 .iconbtn:active{opacity:.7}
@@ -80,8 +82,8 @@ button{font-family:inherit}
 <!-- ═══ 视图 1：任务列表（首页） ═══ -->
 <div id="viewTasks">
   <div class="topbar">
-    <div style="flex:1;min-width:0">
-      <h1>DSH Work Buddy</h1>
+    <div style="flex:1;min-width:0;display:flex;align-items:center;gap:8px">
+      <img class="topbar-logo" src="logo.jpg" alt="logo"><h1>DSH Work Buddy</h1>
       <div class="sub" id="taskSub">加载中…</div>
     </div>
     <a class="link-desktop" href="/?desktop=1">桌面版</a>
