@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="theme-color" content="#0B1220">
-<link rel="icon" href="logo.jpg" />
 <title>DSH Work Buddy · 移动端</title>
 <style>
 :root{
@@ -20,7 +19,6 @@ button{font-family:inherit}
 /* ── 顶栏 ── */
 .topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:10px;padding:calc(env(safe-area-inset-top) + 10px) 14px 10px;background:rgba(11,18,32,.92);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
 .topbar h1{font-size:16px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.topbar-logo{width:24px;height:24px;border-radius:6px;object-fit:cover;flex:none}
 .topbar .sub{font-size:11px;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .iconbtn{border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:8px;padding:6px 10px;font-size:13px;cursor:pointer;flex:none}
 .iconbtn:active{opacity:.7}
@@ -82,8 +80,8 @@ button{font-family:inherit}
 <!-- ═══ 视图 1：任务列表（首页） ═══ -->
 <div id="viewTasks">
   <div class="topbar">
-    <div style="flex:1;min-width:0;display:flex;align-items:center;gap:8px">
-      <img class="topbar-logo" src="logo.jpg" alt="logo"><h1>DSH Work Buddy</h1>
+    <div style="flex:1;min-width:0">
+      <h1>DSH Work Buddy</h1>
       <div class="sub" id="taskSub">加载中…</div>
     </div>
     <a class="link-desktop" href="/?desktop=1">桌面版</a>
@@ -320,10 +318,11 @@ function renderEvent(ev) {
   const d = ev.data || {};
   switch (ev.type) {
     case 'user/message': {
-      const src = d.message && d.message.source;
-      if (src && src.kind === 'plugin' && src.plugin === 'compact') { sysline('📌 上下文压缩检查点（更早历史已折叠）'); break; }
-      const texts = (d.message && d.message.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
-      if (texts) bubbleUser(texts);
+      // user/message 事件结构：{content:[blocks], source}（无 message 包装，与 assistant 不同）
+      const src = d.source;
+      if (src && src.kind === 'plugin' && (src.plugin === 'compact' || src.plugin === '@deepseek-ai/dsh-system-prompt')) break;
+      const texts = (d.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+      if (texts.trim()) bubbleUser(texts);
       break;
     }
     case 'assistant/message': bubbleAssistant(d.message && d.message.content); break;
