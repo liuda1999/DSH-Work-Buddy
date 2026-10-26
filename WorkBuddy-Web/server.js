@@ -2967,7 +2967,11 @@ function findArchiveSessionDir(groupName, taskId) {
   // harness 的 mcp-client 是按实例挂载的 cordis 插件，无 settings/RPC 动态通道；会话的 agent 组合
   // 由 preset 文件在创建时挂载（discovery 每次重读磁盘），因此开关对"新建会话"生效，存量会话不变。
   const MCP_FILE = path.join(DATA_DIR, 'mcp.json');
-  const MCP_PRESET_TARGETS = ['standard-fix', 'universal']; // wb 管理的用户预设（shipped 预设只读不可写）
+  // 目标预设只能有一个：harness 的 mcp-client 以 ctx.root 做 serverName 进程级预留，
+  // 两个预设同时携带同一 serverName 会让后挂载的会话直接失败（模型目录加载不出）。
+  const MCP_PRESET_TARGET = 'standard-fix';
+  const MCP_PRESET_TARGETS = [MCP_PRESET_TARGET];
+  const MCP_ALL_USER_PRESETS = ['standard-fix', 'universal']; // 仅用于清理非目标预设里的残留行
   const MCP_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
   function loadMcpServers() {
     try {
@@ -3054,6 +3058,21 @@ function findArchiveSessionDir(groupName, taskId) {
   function syncMcpPresets(servers) {
     const block = mcpPresetRows(servers);
     const home = process.env.HOME || process.env.USERPROFILE || '';
+    // 非目标预设一律清空 MCP 块（防撞名：serverName 是进程级唯一）
+    for (const id of MCP_ALL_USER_PRESETS.filter((x) => !MCP_PRESET_TARGETS.includes(x))) {
+      const f2 = path.join(home, '.dsh', '.agent-presets', id, 'agent.cordis.yml');
+      if (!fs.existsSync(f2)) continue;
+      const t2 = fs.readFileSync(f2, 'utf8');
+      const b2 = t2.indexOf('# BEGIN wb-mcp');
+      if (b2 < 0) continue;
+      const e2 = t2.indexOf('# END wb-mcp', b2);
+      const tail2 = e2 >= 0 ? t2.slice(t2.indexOf('\n', e2) + 1) : '';
+      const next2 = t2.slice(0, b2).replace(/\n+$/, '\n') + tail2.replace(/^\n+/, '');
+      const tmp2 = f2 + '.tmp';
+      fs.writeFileSync(tmp2, next2);
+      fs.renameSync(tmp2, f2);
+      console.log(`[DSH Work Buddy] MCP 清空非目标预设 ${id} 的注入块（避免 serverName 撞名）`);
+    }
     for (const id of MCP_PRESET_TARGETS) {
       const file = path.join(home, '.dsh', '.agent-presets', id, 'agent.cordis.yml');
       if (!fs.existsSync(file)) continue;
@@ -3098,9 +3117,30 @@ function findArchiveSessionDir(groupName, taskId) {
     // 插件启停尚未实现：诚实返回 501，不再伪装成功
     return sendJson(res, 501, { error: { code: 'not-implemented', message: '插件启停功能尚未实现' } });
   }
-  // MCP：列表（含运行态工具数——尝试 tools.list RPC 统计 mcp__<serverName>__ 前缀；失败则不带 runtime）
+  // MCP：列表（含运行态工具数 + 预设冲突预检）
   if (urlPath === '/api/resources/mcp' && req.method === 'GET') {
     const servers = loadMcpServers();
+    // 预检：当前是否有活跃会话运行在「非目标预设」上——此时启用 MCP 会因 serverName
+    // 进程级独占让那些会话的预设挂载失败（表现为模型目录加载不出）。
+    let presetConflict = null;
+    try {
+      const target = path.join(process.env.HOME || process.env.USERPROFILE || '', '.dsh', '.agent-presets', MCP_PRESET_TARGET, 'agent.cordis.yml');
+      const targetHas = fs.existsSync(target) && fs.readFileSync(target, 'utf8').includes('dsh-mcp-client');
+      if (targetHas) {
+        const sl = await harnessRpc('session.list', {});
+        const items = (sl.sessions || sl.items || []);
+        const others = items.filter((s) => s && s.agentPreset && s.agentPreset !== MCP_PRESET_TARGET);
+        if (others.length) {
+          presetConflict = {
+            targetPreset: MCP_PRESET_TARGET,
+            activeOtherPresets: [...new Set(others.map((s) => s.agentPreset))],
+            activeCount: others.length,
+            hint: `MCP 目前只注入「${MCP_PRESET_TARGET}」预设；检测到 ${others.length} 个会话运行在其它预设上，`
+              + '同时启用可能导致这些会话无法恢复（模型目录加载不出）。建议先关闭那些会话再启用。',
+          };
+        }
+      }
+    } catch (e) { /* 预检失败不影响列表 */ }
     let runtime = null;
     try {
       const sessionId = await getCatalogSession();
@@ -3111,7 +3151,7 @@ function findArchiveSessionDir(groupName, taskId) {
         runtime[s.serverName] = names.filter((n) => n.startsWith(`mcp__${s.serverName}__`)).length;
       }
     } catch (_) { /* tools.list 不可用：运行态留空，不影响管理功能 */ }
-    return sendJson(res, 200, { servers, runtime, presets: MCP_PRESET_TARGETS });
+    return sendJson(res, 200, { servers, runtime, presets: MCP_PRESET_TARGETS, presetConflict });
   }
   // MCP：新增
   if (urlPath === '/api/resources/mcp' && req.method === 'POST') {

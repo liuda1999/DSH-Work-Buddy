@@ -2399,6 +2399,7 @@ select.form-input option{background:#12161F;color:var(--text-2)}
 .wb-switch input:checked+.wb-slider{background:#22C55E}
 .wb-switch input:checked+.wb-slider::before{transform:translateX(16px)}
 .mcp-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+.mcp-warn{background:#3B2A12;border:1px solid #7C5A20;color:#FCD34D;font-size:12px;line-height:1.5;padding:9px 12px;border-radius:8px;margin-bottom:10px}
 .mcp-hint{font-size:12px;color:#64748B;line-height:1.5}
 .mcp-add{border:1px solid #CBD5E1;background:#fff;color:#000;border-radius:8px;padding:6px 12px;font-size:13px;cursor:pointer;white-space:nowrap}
 .mcp-add:hover{border-color:#6366F1;color:#6366F1}
@@ -9058,6 +9059,7 @@ const RS = {
   graphEdgeCount: null,    // 图谱边计数（subject/object → 次数）
   mcp: [],                 // MCP 清单（/api/resources/mcp，wb 自建注册表）
   mcpRuntime: null,        // 运行态 {serverName: 工具数}（tools.list 不可用为 null）
+  mcpConflict: null,       // 预设冲突预检（有其它预设活跃会话时提示）
 };
 const RS_DOC_TAGS = [];    // 新建文档弹窗的 tags chips 状态
 const RS_GRAPH = { nodes: [], edges: [], nodeMap: new Map(), focusNodeId: null, category: null, repo: null };
@@ -9158,6 +9160,7 @@ async function loadRsMcp() {
     const data = await fetchJson('/api/resources/mcp');
     RS.mcp = Array.isArray(data.servers) ? data.servers : [];
     RS.mcpRuntime = data.runtime || null;
+    RS.mcpConflict = data.presetConflict || null;
   } catch (e) {
     RS.mcp = [];
     RS.mcpRuntime = null;
@@ -10199,7 +10202,11 @@ function renderRsMcpPane() {
       </div>
     </div>`;
   }).join('');
+  const conflictBar = RS.mcpConflict
+    ? `<div class="mcp-warn">⚠️ ${esc(RS.mcpConflict.hint)}</div>`
+    : '';
   pane.innerHTML = `
+    ${conflictBar}
     <div class="mcp-toolbar">
       <div class="mcp-hint">MCP 服务器由 wb 注册表管理；开关只对<strong>新建会话</strong>生效（组合在会话创建时挂载）。</div>
       <button class="mcp-add" id="rsMcpAdd">＋ 新增 MCP</button>
