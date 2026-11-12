@@ -927,47 +927,132 @@ function seedData() {
 const TASK_FILE = 'task.json';
 
 // 写任务元数据：dir 有效且存在才落盘；失败静默 warn（不阻塞业务）
-function saveTaskFile(task) {
-  if (!task || !task.dir || !fs.existsSync(task.dir)) return;
+// 2026-11-13 修复：同一任务可能同时存在 data/tasks/<id>/ 与 data/workspaces/<ws>/<id>/ 两份
+// task.json（历史迁移残留）。只写 task.dir 一处会让另一处保留旧状态，重启后去重取到旧副本
+// 导致状态「回滚」（如已完成任务又回到今日待办）。故落盘时同步所有同名副本。
+function taskFileCopies(taskId) {
+  const copies = [];
+  if (!taskId) return copies;
+  const oldFile = path.join(TASK_DATA_DIR, taskId, TASK_FILE);
+  if (fs.existsSync(oldFile)) copies.push(oldFile);
   try {
-    fs.writeFileSync(path.join(task.dir, TASK_FILE), JSON.stringify(task, null, 2), 'utf8');
-  } catch (e) {
-    console.warn('[DSH Work Buddy] 写入 task.json 失败：', e.message);
+    for (const wsEnt of fs.readdirSync(WS_DATA_DIR, { withFileTypes: true })) {
+      if (!wsEnt.isDirectory()) continue;
+      const f = path.join(WS_DATA_DIR, wsEnt.name, taskId, TASK_FILE);
+      if (fs.existsSync(f)) copies.push(f);
+    }
+  } catch (e) { /* 工作区目录缺失时跳过 */ }
+  return copies;
+}
+
+function saveTaskFile(task) {
+  if (!task || !task.dir || !fs.existsSync(task.dir)) {
+    // dir 无效时仍尝试同步已存在的副本（避免丢更新）
+    if (!task || !task.id) return;
+  }
+  const payload = JSON.stringify(task, null, 2);
+  const written = new Set();
+  if (task.dir && fs.existsSync(task.dir)) {
+    try {
+      const primary = path.join(task.dir, TASK_FILE);
+      fs.writeFileSync(primary, payload, 'utf8');
+      written.add(normPath(path.resolve(primary)));
+    } catch (e) {
+      console.warn('[DSH Work Buddy] 写入 task.json 失败：', e.message);
+    }
+  }
+  // 同步其它同名副本（多副本收敛，消除状态回滚）
+  for (const copy of taskFileCopies(task.id)) {
+    const key = normPath(path.resolve(copy));
+    if (written.has(key)) continue;
+    try {
+      fs.writeFileSync(copy, payload, 'utf8');
+      written.add(key);
+    } catch (e) {
+      console.warn('[DSH Work Buddy] 同步副本 task.json 失败：', copy, e.message);
+    }
   }
 }
 
 // 从磁盘恢复任务：收集 data/tasks/<任务>/task.json 与 data/workspaces/<工作区>/<任务>/task.json
 // （一级目录里出现 task.json 即视为任务目录）；无 task.json 的目录静默跳过（旧任务/空目录），
 // 存在但解析失败才 warn；按 createdAt 升序返回
+//
+// 2026-11-13 修复「重复任务/已完成仍留今日待办」：
+// 同一 id 可能同时存在于 data/tasks/ 与 data/workspaces/<工作区>/ 两处（历史迁移残留），
+// 原实现两处都 push → 内存 db 出现同一任务两条（其中一条为过时状态），表现为
+// 看板重复卡片、已完成/已归档任务仍显示在今日待办、KPI 虚高。
+// 现按 id 去重：同 id 取 mtime 最新的副本（新布局 data/workspaces 优先），并重新落盘所有副本，
+// 使两份内容收敛为同一份（消除后续状态回滚的根源）。
 function loadTasksFromDisk() {
-  const tasks = [];
-  const visit = (dir) => {
+  const byId = new Map();
+  const record = (dir) => {
     const file = path.join(dir, TASK_FILE);
     if (!fs.existsSync(file)) return; // 旧任务目录/空目录：无档案文件，静默跳过
     try {
       const task = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (task && task.id) tasks.push(task);
-      else console.warn('[DSH Work Buddy] 跳过无效 task.json：', file);
+      if (!task || !task.id) {
+        console.warn('[DSH Work Buddy] 跳过无效 task.json：', file);
+        return;
+      }
+      let mtime = 0;
+      try { mtime = fs.statSync(file).mtimeMs || 0; } catch (e) { /* stat 失败按 0 处理 */ }
+      const normalizedDir = normPath(path.resolve(dir));
+      const isWorkspaceLayout = normalizedDir.startsWith(normPath(path.resolve(WS_DATA_DIR)) + '/');
+      const prev = byId.get(task.id);
+      if (!prev) {
+        byId.set(task.id, { task, mtime, isWorkspaceLayout });
+        return;
+      }
+      // 同一 id 多副本：以 mtime 最新者为准；mtime 相同则新布局（workspaces）优先
+      const newer = mtime > prev.mtime
+        || (mtime === prev.mtime && isWorkspaceLayout && !prev.isWorkspaceLayout);
+      if (newer) byId.set(task.id, { task, mtime, isWorkspaceLayout });
     } catch (e) {
       console.warn('[DSH Work Buddy] 跳过损坏的 task.json：', file, e.message);
     }
   };
-  // 兜底任务目录：data/tasks/<id>/
+  // 旧布局：data/tasks/<id>/（先扫，作为基线）
   try {
     for (const ent of fs.readdirSync(TASK_DATA_DIR, { withFileTypes: true })) {
-      if (ent.isDirectory()) visit(path.join(TASK_DATA_DIR, ent.name));
+      if (ent.isDirectory()) record(path.join(TASK_DATA_DIR, ent.name));
     }
   } catch (e) { /* 目录缺失时跳过 */ }
-  // 工作区下任务目录：data/workspaces/<工作区>/<taskId>/
+  // 新布局：data/workspaces/<工作区>/<taskId>/（后扫，mtime 更新者覆盖旧副本）
   try {
     for (const wsEnt of fs.readdirSync(WS_DATA_DIR, { withFileTypes: true })) {
       if (!wsEnt.isDirectory()) continue;
       const wsDir = path.join(WS_DATA_DIR, wsEnt.name);
       for (const ent of fs.readdirSync(wsDir, { withFileTypes: true })) {
-        if (ent.isDirectory()) visit(path.join(wsDir, ent.name));
+        if (ent.isDirectory()) record(path.join(wsDir, ent.name));
       }
     }
   } catch (e) { /* 目录缺失时跳过 */ }
+
+  const tasks = [...byId.values()].map((v) => v.task);
+  const dedupedCount = tasks.length;
+  const scannedCount = (() => {
+    let n = 0;
+    try {
+      for (const ent of fs.readdirSync(TASK_DATA_DIR, { withFileTypes: true })) {
+        if (ent.isDirectory() && fs.existsSync(path.join(TASK_DATA_DIR, ent.name, TASK_FILE))) n++;
+      }
+    } catch (e) { /* ignore */ }
+    try {
+      for (const wsEnt of fs.readdirSync(WS_DATA_DIR, { withFileTypes: true })) {
+        if (!wsEnt.isDirectory()) continue;
+        const wsDir = path.join(WS_DATA_DIR, wsEnt.name);
+        for (const ent of fs.readdirSync(wsDir, { withFileTypes: true })) {
+          if (ent.isDirectory() && fs.existsSync(path.join(wsDir, ent.name, TASK_FILE))) n++;
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return n;
+  })();
+  if (scannedCount > dedupedCount) {
+    console.log(`[DSH Work Buddy] 任务去重：磁盘 ${scannedCount} 份 task.json → ${dedupedCount} 个唯一任务`
+      + `（已按最新副本合并 ${scannedCount - dedupedCount} 个重复项）`);
+  }
   tasks.sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
   return tasks;
 }
@@ -1074,9 +1159,37 @@ async function ensureTaskDir(task) {
     }
     return;
   }
+  // 2026-11-13 修复「旧布局目录复活成重复副本」：
+  // 兜底解析前先找磁盘上该任务的既有目录（优先 workspaces 新布局），命中即沿用，
+  // 避免 harness 未就绪时回退 data/tasks 并新建出与工作区并存的第二份副本。
+  const existing = findExistingTaskDir(task.id);
+  if (existing) {
+    task.dir = existing;
+    try { fs.mkdirSync(task.dir, { recursive: true }); } catch (e) { /* 已存在则忽略 */ }
+    if (task.id) saveTaskFile(task);
+    return;
+  }
   task.dir = await taskDirFor(task.id, task.workspaceId);
   try { fs.mkdirSync(task.dir, { recursive: true }); } catch (e) { /* 目录创建失败时任务仍可创建 */ }
   if (task.id) saveTaskFile(task); // 写回修正后的 dir，清除历史遗留的 Windows 路径
+}
+
+// 在磁盘上查找某任务已有的目录（workspaces 新布局优先，其次 data/tasks 旧布局）。
+// 供 ensureTaskDir 在解析新路径前复用既有目录，杜绝「同一任务两处目录」的再生。
+function findExistingTaskDir(taskId) {
+  if (!taskId) return null;
+  // ① data/workspaces/<任意工作区>/<taskId>/
+  try {
+    for (const wsEnt of fs.readdirSync(WS_DATA_DIR, { withFileTypes: true })) {
+      if (!wsEnt.isDirectory()) continue;
+      const candidate = path.join(WS_DATA_DIR, wsEnt.name, taskId);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  } catch (e) { /* 工作区目录缺失时跳过 */ }
+  // ② data/tasks/<taskId>/
+  const legacy = path.join(TASK_DATA_DIR, taskId);
+  if (fs.existsSync(legacy)) return legacy;
+  return null;
 }
 
 // ---- 任务目录删除的安全判定（防止误删资产 / 幽灵目录） ----
