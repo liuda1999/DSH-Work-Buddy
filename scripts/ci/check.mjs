@@ -15,6 +15,7 @@
  * 任一 FAIL 退出码 1；全部 PASS 退出码 0。
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
@@ -63,7 +64,7 @@ for (const html of ['WorkBuddy-Web/index.html', 'WorkBuddy-Web/m.html']) {
   const blocks = [...t.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
   let allOk = true;
   let firstErr = '';
-  const tmp = path.join(os.tmpdir ?? require('node:os').tmpdir(), 'ci-inline-' + Math.random().toString(36).slice(2) + '.js');
+  const tmp = path.join(os.tmpdir(), 'ci-inline-' + Math.random().toString(36).slice(2) + '.js');
   fs.writeFileSync(tmp, blocks.join('\n;\n'), 'utf8');
   const r = spawnSync('node', ['--check', tmp], { encoding: 'utf8' });
   allOk = r.status === 0;
