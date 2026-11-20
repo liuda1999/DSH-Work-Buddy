@@ -748,6 +748,7 @@ async function wbAutoCompactSweep() {
   } catch (e) { return; /* harness 未就绪：静默等下一轮 */ }
   for (const s of items) {
     if (!s || s.running || s.agentPreset !== 'standard-fix') continue;
+    if (String(s.cwd || '').startsWith('/tmp/')) continue; /* 测试会话：不代为压缩 */
     const cp = s.projections && s.projections.values && s.projections.values.contextPressure;
     if (!cp || !(cp.contextWindow > 0) || !(cp.pressureTokens > 0)) continue;
     if (cp.pressureTokens < cp.contextWindow * WB_AUTO_COMPACT_RATIO) continue;

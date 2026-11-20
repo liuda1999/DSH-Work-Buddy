@@ -2,7 +2,7 @@
 
 DSH Work Buddy 是一个综合性的任务管理与智能体协作平台，集成了任务管理控制台（WorkBuddy-Web）、DeepSeek Harness 智能体组件和 LLM Wiki 文档组件。
 
-- **版本**：`0.4.9`
+- **版本**：`0.4.12`
 - **项目标识**：见根目录 [`VERSION`](./VERSION)
 
 ---
@@ -34,8 +34,8 @@ DSH-WorkBuddy/
 
 - **入口文件**：`WorkBuddy-Web/index.html`
 - **一体化服务**：`WorkBuddy-Web/server.js`（固定端口 `0.0.0.0:8765`）
-- **版本**：`0.4.9`
-- **核心能力**：任务看板与 KPI、项目总览、文件归档、日程管理、资源仓库（插件/技能/智能体管理/**MCP 管理**/Wiki 知识图谱）、插件社区、设置中心（40+ 供应商与本地模型）；**移动端竖屏界面**（`m.html`：手机访问自动切换，任务首页 + 智能体对话，`?desktop=1` 强制桌面版）；用户级智能体预设（standard-fix / universal，含上下文压缩体系与 MCP 组合同步）、幽灵工作区展示过滤与启动自愈清扫、systemd 服务版本受控部署（`deploy/`）、局域网访问（`http://<内网IP>:8765`）
+- **版本**：`0.4.12`
+- **核心能力**：任务看板与 KPI、项目总览、文件归档、日程管理、资源仓库（插件/技能/智能体管理/**MCP 管理**/Wiki 知识图谱）、插件社区、设置中心（40+ 供应商与本地模型）；**移动端竖屏界面**（`m.html`：手机访问自动切换，任务首页 + 智能体对话，`?desktop=1` 强制桌面版）；用户级智能体预设（standard-fix / universal，含上下文压缩体系、MCP 组合同步与上下文自动压缩兜底桥）、幽灵工作区展示过滤与启动自愈清扫、systemd 服务版本受控部署（`deploy/`）、局域网访问（`http://<内网IP>:8765`）
 
 ### 2. deepseek-harness
 
@@ -145,7 +145,7 @@ pnpm docs:preview
 本项目分发包为根目录下的：
 
 ```
-DSH-WorkBuddy-<VERSION>.zip   # 如 DSH-WorkBuddy-0.4.9.zip
+DSH-WorkBuddy-<VERSION>.zip   # 如 DSH-WorkBuddy-0.4.12.zip
 ```
 
 该压缩包已排除以下内容：
