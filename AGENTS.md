@@ -205,3 +205,22 @@ llm-wiki 的混合检索依赖 FastEmbed 嵌入模型，因 HF 下载在内网�
 6. 任务数据为内存 db + `task.json` 落盘（重启恢复）；任务专属目录是会话隔离边界。
 7. 新功能改动须配验证脚本（`_test_probe_*.mjs` 实证 + 回归套件），修复必须用真实测试结果确认。
 8. 对话窗口、设置中心、归档页的统计单位与字段契约（如 detail 返回 `categories`、plugin-community 返回 `{presets,user}`）改动时须前后端同步。
+
+### 7.8 MCP 使用约束（重要，2026-11-20 实测确认）
+
+harness 的 `mcp-client` 以 `ctx.root` 为键做 `serverName` **进程级独占预留**，由此产生两条硬约束：
+
+1. **同一 MCP 同时只能被一个活跃会话使用**。前一个使用该 MCP 的会话（对话窗口）仍存活时，
+   新会话挂载同一 MCP 会失败（`serverName "X" is already in use by another mcp-client`），
+   表现为「模型目录加载中」。解决：关闭占用它的对话窗口，或在「资源仓库 → MCP」停用后重开。
+2. **多个不同的 MCP 可以并存**（serverName 不同即可），同一会话可同时使用多个 MCP 的工具。
+
+网关层配套：
+- `POST /api/session.create` 撞名错误已自解释（返回可操作的中文原因，前端直接展示）；
+- 桌面 `chatShowOpenError` 与移动端均有 `mcp-conflict` 友好错误分型；
+- `GET /api/resources/mcp` 返回 `presetConflict` 预检字段（其它预设存在活跃会话时警示）。
+
+另：llama-embed 路由器（`qwen.service`，端口 23456，`--models-preset /opt/llama_models.ini`）
+的 `/props` 返回 `role:router, n_ctx:0` —— router 自身无模型上下文属正常行为；
+真实能力在按需拉起的子实例（Qwen `--ctx-size 131072`）。探测接口
+`GET /api/model-capacity?provider=X` 已适配 router 形态（沿 /v1/models 子实例参数解析）。

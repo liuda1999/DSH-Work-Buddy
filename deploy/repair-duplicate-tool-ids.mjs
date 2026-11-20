@@ -30,6 +30,7 @@ const events = lines.map((l) => { try { return JSON.parse(l); } catch { return n
 let changed = 0;
 const renamed = new Map();
 const pending = new Map();
+const resultCount = new Map();
 
 for (const ev of events) {
   if (!ev) continue;
@@ -56,14 +57,20 @@ for (const ev of events) {
     const msg = ev.data && ev.data.message;
     if (!msg || !msg.source) continue;
     const callId = msg.source.callId;
-    const queue = pending.get(callId);
-    if (queue && queue.length) {
-      const newId = queue.shift();
-      msg.source.callId = newId;
-      for (const block of msg.content || []) {
-        if (block && block.type === 'tool-result' && block.toolCallId === callId) block.toolCallId = newId;
+    const newIds = pending.get(callId);
+    if (newIds && newIds.length) {
+      // 流序配对：事件流里 result 紧随其 call（顺序执行），第 n 条 result 对应第 n 个 call；
+      // n=1 → 保留原 id（第一个 call 未改名），n≥2 → 对应 dup 改名。
+      const n = (resultCount.get(callId) || 0) + 1;
+      resultCount.set(callId, n);
+      const newId = n >= 2 ? newIds[n - 2] : undefined;
+      if (newId) {
+        msg.source.callId = newId;
+        for (const block of msg.content || []) {
+          if (block && block.type === 'tool-result' && block.toolCallId === callId) block.toolCallId = newId;
+        }
+        changed += 1;
       }
-      changed += 1;
     }
   }
 }

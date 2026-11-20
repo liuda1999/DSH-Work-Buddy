@@ -5523,8 +5523,13 @@ async function ensureHarnessSession(task) {
     }).then(() => refreshTasks()).catch(() => {});
     return snapshot;
   } catch (e) {
-    console.warn('[DSH Work Buddy] 创建 harness 会话失败（dsh web 未启动或 RPC 异常）:', e && e.message);
-    return { error: { kind: 'rpc', message: (e && e.message) || 'RPC 调用失败' } };
+    const raw = (e && e.message) || 'RPC 调用失败';
+    console.warn('[DSH Work Buddy] 创建 harness 会话失败（dsh web 未启动或 RPC 异常）:', raw);
+    // MCP 撞名分型（2026-11-20）：网关已把底层错误改写为可操作文案
+    if (raw.includes('MCP 占用') || raw.includes('already in use by another mcp-client')) {
+      return { error: { kind: 'mcp-conflict', message: raw } };
+    }
+    return { error: { kind: 'rpc', message: raw } };
   }
 }
 
@@ -5738,6 +5743,10 @@ function chatShowOpenError(err) {
     title = '智能体服务未就绪（已等待 30 秒）';
     sub = '请确认 dsh 智能体服务已启动后重试';
     ph = '智能体服务未就绪，暂时无法发送消息';
+  } else if (kind === 'mcp-conflict') {
+    title = '会话无法创建：MCP 被其它会话占用';
+    sub = msg;
+    ph = 'MCP 被其它会话占用，暂时无法发送消息';
   } else {
     title = 'RPC 调用失败';
     sub = msg || 'dsh 智能体服务 RPC 调用异常';
@@ -7643,8 +7652,17 @@ async function refreshSwCtx() {
     const prov = SW.ctxProvCache;
     const route = prov && prov.startsWith(WB_FB_PREFIX) ? prov.slice(WB_FB_PREFIX.length) : prov;
     const override = await getCtxOverrideWin(route);
-    const win = override || harnessWin;
+    // 2026-11-20：探测服务端真实窗口（llama.cpp /props）。声明（settings/override）与真实不一致时，
+    // 以真实值为准显示百分比，并给出徽标提示——压缩阈值按声明值计算，声明偏大时
+    // 请求会先失败、压缩才被动触发（overflow 恢复），这是「40% 就压缩」观感的根源之一。
+    let detected = null;
+    try {
+      const cap = await wbRpc('model-capacity', { provider: route });
+      if (cap && cap.detected) detected = cap.detected;
+    } catch { /* 探测不可用时保持声明值 */ }
+    const win = detected || override || harnessWin;
     const pct = Math.min(100, Math.round(used / win * 100));
+    const winMismatch = detected && harnessWin && detected !== harnessWin;
     const color = pct > 85 ? '#EF4444' : pct > 60 ? '#F59E0B' : '#22C55E';
     const R = 34, C = 2 * Math.PI * R;
     body.innerHTML = `
@@ -7664,8 +7682,12 @@ async function refreshSwCtx() {
       <div class="sw-ctx-last">更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}</div>`;
     // 真实窗口钳制提示（仅当覆盖值较服务端上报更小，即本地模型被高估时显示）
     if (badgeEl) {
-      if (override && win < harnessWin) { badgeEl.hidden = false; badgeEl.textContent = `已按真实窗口 ${win} 钳制（服务端上报 ${harnessWin}）`; }
-      else badgeEl.hidden = true;
+      if (winMismatch) {
+        badgeEl.hidden = false;
+        badgeEl.textContent = `⚠️ 声明窗口 ${harnessWin} 与服务端真实 ${detected} 不一致（已按真实值显示）。压缩按声明值 80% 触发，声明偏大时请求会先失败`;
+      } else if (override && win < harnessWin) {
+        badgeEl.hidden = false; badgeEl.textContent = `已按真实窗口 ${win} 钳制（服务端上报 ${harnessWin}）`;
+      } else { badgeEl.hidden = true; }
     }
     compactBtn.disabled = false;
     // 自动压缩由智能体内置 agent/pre-step 压力触发（compaction-basic，随 preset 装配）——

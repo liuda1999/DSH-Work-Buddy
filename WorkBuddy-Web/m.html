@@ -273,7 +273,11 @@ async function openChat(task) {
     loadChatMeta();
     startPoll();
   } catch (e) {
-    $('msgScroll').innerHTML = '<div class="sysline err">会话连接失败：' + esc(e.message) + '</div>';
+    const raw = String(e.message || e);
+    const friendly = raw.includes('already in use by another mcp-client') || raw.includes('MCP 占用')
+      ? 'MCP 正被其它会话占用：请先关闭占用它的对话窗口，或在「资源仓库 → MCP」中停用后重试。'
+      : raw;
+    $('msgScroll').innerHTML = '<div class="sysline err">会话连接失败：' + esc(friendly) + '</div>';
   }
 }
 async function loadChatMeta() {

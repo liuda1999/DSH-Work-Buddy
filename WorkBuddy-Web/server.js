@@ -682,7 +682,7 @@ function shutdown(reason, code = 0) {
 const LOCAL_API_PREFIXES = [
   '/api/workspaces', '/api/tasks', '/api/archive', '/api/wiki',
   '/api/resources', '/api/schedule', '/api/search', '/api/plugin-community',
-  '/api/model-modality', '/api/probe-responses'
+  '/api/model-modality', '/api/probe-responses', '/api/model-capacity'
 ];
 const isLocalApi = (p) => p === '/api/workspaces/sync-harness' || LOCAL_API_PREFIXES.some((pre) => p === pre || p.startsWith(pre + '/'));
 
@@ -1777,6 +1777,42 @@ const FALLBACK_DEADLINE_MS = 120000;
 const FALLBACK_RETRY_PREFIX = 'wb-fb-'; // 网关重试 session.prompt 的 rpcId 前缀（前端据此去重重试回显的用户气泡）
 
 // 判定错误消息是否为「协议不支持」信号（与 probeResponsesSupport / 前端 isProtocolFallbackErr 保持同一套口径）
+// max_tokens 范围错误（2026-11-20）：DeepSeek 云端在「prompt + max_tokens > 模型可用空间」
+// 时返回 400 Invalid max_tokens value，并在消息中给出当前允许范围 [1, X]。
+// 固定的 max_tokens（连接配置 defaultMaxTokens，如 256000）在长会话下会超过剩余空间。
+// 自愈：解析允许上限 X → 将 llm-deepseek 连接配置 maxTokens 调低至 X → 重发本次 prompt。
+// 用户后续仍可在设置中心随意改回（此为自适应，不写死）。
+const MAX_TOKENS_RANGE_RE = /the valid range of max_tokens is \[1, (\d+)\]/i;
+function isMaxTokensRangeError(msg) {
+  return MAX_TOKENS_RANGE_RE.test(String(msg || ''));
+}
+function maxTokensAllowedLimit(msg) {
+  const m = String(msg || '').match(MAX_TOKENS_RANGE_RE);
+  return m ? parseInt(m[1], 10) : null;
+}
+async function healMaxTokensRange(sessionId, allowedLimit, providerFilter) {
+  try {
+    const d = await harnessRpc('settings.describe', {});
+    const ns = (d.namespaces || []).find((n) => n.ns === 'llm-deepseek');
+    if (!ns || !ns.value) return null;
+    const cur = ns.value.maxTokens;
+    if (typeof cur !== 'number' || cur <= allowedLimit) return null; // 配置本身合法：不动作
+    const patched = JSON.parse(JSON.stringify(ns.value));
+    patched.maxTokens = allowedLimit;
+    const r = await harnessRpc('settings.mutate', {
+      ns: 'llm-deepseek',
+      ops: [{ op: 'set', path: ['maxTokens'], value: allowedLimit }],
+      expectedRevision: ns.revision,
+    });
+    console.log(`[DSH Work Buddy] max_tokens 自愈：llm-deepseek.maxTokens ${cur} → ${allowedLimit}` +
+      `（服务端允许范围；原为连接配置，可在设置中心再调整）`);
+    return { healed: true, old: cur, newLimit: allowedLimit };
+  } catch (e) {
+    console.warn('[DSH Work Buddy] max_tokens 自愈失败：', (e && e.message) || e);
+    return null;
+  }
+}
+
 function isProtocolFallbackError(msg) {
   const m = String(msg || '');
   const st = m.match(/\((\d{3})\)/);
@@ -1873,6 +1909,27 @@ async function pollSessionFallback(w) {
   const reason = latest.data.reason || {};
   if (w.retried || reason.kind !== 'error') { clearSessionFallback(w); return; } // 重试已完成 / 本轮正常结束
   const msg = (reason.error && (reason.error.message || reason.error.code)) || '';
+  // max_tokens 范围自愈（2026-11-20）：长会话 + 固定 max_tokens 超过剩余空间时，
+  // DeepSeek 云端 400 并给出允许上限；自动调低连接配置后重发本次消息。
+  if (isMaxTokensRangeError(msg) && !w.maxTokensHealed) {
+    try {
+      const limit = maxTokensAllowedLimit(msg);
+      if (limit !== null) {
+        const healed = await healMaxTokensRange(w.sessionId, limit);
+        if (healed && healed.healed) {
+          w.maxTokensHealed = true;
+          await harnessRpc('session.prompt', w.payload, FALLBACK_RETRY_PREFIX + Math.random().toString(36).slice(2));
+          console.log('[DSH Work Buddy] max_tokens 自愈：已重发本次消息（新上限 ' + healed.newLimit + '）');
+          clearSessionFallback(w);
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn('[DSH Work Buddy] max_tokens 自愈异常：', (e && e.message) || e);
+    }
+    clearSessionFallback(w);
+    return;
+  }
   if (!isProtocolFallbackError(msg)) { clearSessionFallback(w); return; } // 非协议错误（网络/排队/维护/参数）→ 不触发降级
   // P7 副作用防护：失败回合区间内已发生工具调用 → 重发会重复执行已完成的工具（文件编辑等），不自动重试
   const startSeq = latest.seq != null ? latest.seq : 0;
@@ -2374,6 +2431,76 @@ async function handleLocalApi(req, res, urlPath, params) {
     }
   }
 
+  // 模型容量探测（2026-11-20）：对指定 provider 的 baseURL 探测真实上下文窗口。
+  // 仅允许探测 settings 中已配置的 provider（防 SSRF）；llama.cpp 类端点读 /props。
+  // 用途：前端在「声明窗口 ≠ 服务端真实窗口」时给出提示（压缩阈值以声明值为准，
+  // 声明大于真实会导致请求先失败、压缩才被动触发）。
+  if (urlPath === '/api/model-capacity' && (req.method === 'GET' || req.method === 'POST')) {
+    // 双协议：GET ?provider=（脚本/移动端，纯 JSON）+ POST wbRpc 信封（桌面端上下文面板，信封进/信封出）
+    let provider = params.provider || '';
+    let rpcId = null;
+    if (req.method === 'POST') {
+      try {
+        const env = await readBody(req);  // readBody 返回已解析对象
+        rpcId = (env && env.rpcId) || null;
+        provider = (env && env.payload && env.payload.provider) || '';
+      } catch (e) { /* 非 JSON：保持空 provider → 走 provider-not-found */ }
+    }
+    const reply = (body, status = 200) => (
+      rpcId !== null ? sendJson(res, status, { type: 'server-response', rpcId, result: body })
+                     : sendJson(res, status, body)
+    );
+    try {
+      const d = await harnessRpc('settings.describe', {});
+      const pi = (d.namespaces || []).find((n) => n.ns === 'llm-pi-ai');
+      const provs = (pi && pi.value && pi.value.providers) || {};
+      const prof = provs[provider];
+      if (!prof) {
+        if (rpcId !== null) return reply({ ok: false, error: { code: 'provider-not-found', message: 'provider 不存在：' + provider } });
+        return sendJson(res, 404, { error: { message: 'provider 不存在：' + provider } });
+      }
+      const declared = (prof.models || []).reduce((mx, m) => Math.max(mx, m.contextWindow || 0),
+        prof.defaultContextWindow || 0);
+      let detected = null, source = null, probeError = null;
+      const base = String(prof.baseURL || '').replace(/\/+$/, '');
+      const httpGet = (u) => new Promise((resolve, reject) => {
+        const preq = http.get(u, { timeout: 8000 }, (pres) => {
+          let b = '';
+          pres.on('data', (c) => { b += c; });
+          pres.on('end', () => resolve(b));
+        });
+        preq.on('error', (e) => reject(e));
+        preq.on('timeout', () => { preq.destroy(); reject(new Error('探测超时')); });
+      });
+      try {
+        const props = JSON.parse(await httpGet(base + '/props'));
+        const dgs = props && props.default_generation_settings;
+        // 2026-11-20 router 适配：llama.cpp router 形态 /props 返回 n_ctx:0（role:router），
+        // 模型在按需拉起的子实例上——沿 /v1/models 的 status.args 解析子实例 --ctx-size 取最大值。
+        if (dgs && dgs.n_ctx) {
+          detected = dgs.n_ctx;
+          source = '/props';
+        } else {
+          const models = JSON.parse(await httpGet(base + '/v1/models'));
+          let mx = 0;
+          for (const m of (models.data || [])) {
+            const args = (m.status && m.status.args) || [];
+            const cIdx = args.findIndex((a) => a === '--ctx-size' || a === '-c');
+            if (cIdx >= 0 && cIdx + 1 < args.length) {
+              const v = parseInt(args[cIdx + 1], 10);
+              if (Number.isFinite(v) && v > mx) mx = v;
+            }
+          }
+          if (mx > 0) { detected = mx; source = 'router:/v1/models'; }
+        }
+      } catch (e) { probeError = String(e && e.message || e); }
+      const capValue = { provider, declared, detected: detected || null, source, probeError };
+      return rpcId !== null ? reply({ ok: true, value: capValue }) : sendJson(res, 200, capValue);
+    } catch (e) {
+      if (rpcId !== null) return reply({ ok: false, error: { code: 'probe-failed', message: e.message } }, 200);
+      return sendJson(res, 500, { error: { message: e.message } });
+    }
+  }
   if (urlPath === '/api/tasks' && req.method === 'GET') {
     const ws = params.ws;
     // 惰性补齐旧任务目录：dir 为空/目录不存在的，解析并创建（优先工作区目录下）后写回
@@ -3556,6 +3683,156 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: false, error: { code: 'harness-offline', message: 'dsh 智能体服务未就绪' } }));
     });
     preq.end(rawJson);
+    return;
+  }
+
+  // ---------- MCP 撞名自愈辅助（2026-11-21）：预设重挂锁死检测 + 无会话运行时自动重启 ----------
+  // harness 行为：预设组合重挂时旧 serverName 预留不释放（进程内 WeakMap），锁死该预设的全部会话创建。
+  // 网关层唯一可靠解法：无运行中会话时重启 harness（ histories 落盘不丢，运行中会话会被打断——故有运行会话时不做）。
+  const MCP_HEAL_RESTART_COOLDOWN_MS = 60000;
+  let mcpHealRestartAt = 0;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function harnessRunningCount() {
+    return await new Promise((resolve) => {
+      const payload = JSON.stringify({ type: 'client-request', rpcId: 'wb-heal-' + Date.now(), method: 'session.list', payload: {} });
+      const req = http.request({
+        host: HARNESS_HOST, port: HARNESS_PORT, path: '/api/session.list', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+        timeout: 8000
+      }, (rres) => {
+        const cs = [];
+        rres.on('data', (c) => cs.push(c));
+        rres.on('end', () => {
+          try {
+            const env = JSON.parse(Buffer.concat(cs).toString('utf8'));
+            const items = env && env.result && env.result.ok && env.result.value && env.result.value.items;
+            resolve(Array.isArray(items) ? items.filter((s) => s && s.running).length : -1);
+          } catch (e) { resolve(-1); }
+        });
+      });
+      req.on('error', () => resolve(-1));
+      req.on('timeout', () => { try { req.destroy(new Error('timeout')); } catch (e) { /* ignore */ } });
+      req.end(payload);
+    });
+  }
+  // 严格就绪探测：RPC 信封调 host.describe 且要求 result.ok===true（probeHarness 会把启动期 404 当就绪，不能用）
+  async function harnessRpcReady() {
+    return await new Promise((resolve) => {
+      const payload = JSON.stringify({ type: 'client-request', rpcId: 'wb-ready-' + Date.now(), method: 'host.describe', payload: {} });
+      const req = http.request({
+        host: HARNESS_HOST, port: HARNESS_PORT, path: '/api/host.describe', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+        timeout: 8000
+      }, (rres) => {
+        const cs = [];
+        rres.on('data', (c) => cs.push(c));
+        rres.on('end', () => {
+          try {
+            const env = JSON.parse(Buffer.concat(cs).toString('utf8'));
+            resolve(Boolean(env && env.result && env.result.ok));
+          } catch (e) { resolve(false); }
+        });
+      });
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => { try { req.destroy(new Error('timeout')); } catch (e) { /* ignore */ } });
+      req.end(payload);
+    });
+  }
+
+  // 会话创建撞名自解释（2026-11-20）：MCP serverName 进程级独占导致预设挂载失败时，
+  // 把 harness 的底层错误改写为可操作的原因与解决步骤（原 message 保留在 details）。
+  if (urlPath === '/api/session.create' && req.method === 'POST') {
+    const rawBody = await new Promise((resolve) => {
+      let b = '';
+      req.on('data', (c) => { b += c; });
+      req.on('end', () => resolve(b));
+    });
+    const preq = http.request({
+      host: HARNESS_HOST, port: HARNESS_PORT, path: '/api/session.create', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(rawBody) }
+    }, async (pres) => {
+      const chunks = [];
+      pres.on('data', (c) => chunks.push(c));
+      pres.on('end', async () => {
+        let body = Buffer.concat(chunks);
+        let collided = null;
+        try {
+          const env = JSON.parse(body.toString('utf8'));
+          const err = env && env.result && (!env.result.ok) && env.result.error;
+          const msg = err && (err.message || '');
+          const m = msg.match(/serverName "([^"]+)" is already in use by another mcp-client/);
+          if (m) collided = m[1];
+        } catch (e) { /* 非 JSON：原样回传 */ }
+
+        // 撞名自愈：无运行中会话（无人受影响）+ 冷却期外 → 重启 harness 清残留 → 重试创建
+        if (collided && Date.now() - mcpHealRestartAt > MCP_HEAL_RESTART_COOLDOWN_MS) {
+          const running = await harnessRunningCount();
+          if (running === 0) {
+            mcpHealRestartAt = Date.now();
+            console.log('[DSH Work Buddy] MCP「' + collided + '」撞名且无运行中会话：自动重启智能体服务清除预设挂载残留…');
+            shutdownHarness();
+            for (let i = 0; i < 10; i++) {
+              if (!harnessProcess || harnessProcess.exitCode !== null) break;
+              await sleep(300);
+            }
+            spawnHarness();
+            const healDeadline = Date.now() + 60000;
+            while (Date.now() < healDeadline && !(await harnessRpcReady())) await sleep(600);
+            if (await harnessRpcReady()) {
+              const retry = await new Promise((resolve) => {
+                const rreq = http.request({
+                  host: HARNESS_HOST, port: HARNESS_PORT, path: '/api/session.create', method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(rawBody) }
+                }, (rres) => {
+                  const rc = [];
+                  rres.on('data', (c) => rc.push(c));
+                  rres.on('end', () => resolve({ status: rres.statusCode, headers: rres.headers, body: Buffer.concat(rc) }));
+                });
+                rreq.on('error', (e) => resolve({ status: 502, headers: {}, body: JSON.stringify({ ok: false, error: { message: e.message } }) }));
+                rreq.end(rawBody);
+              });
+              // 重试仅在明确成功（2xx 且 ok）时返回；失败回退自解释错误，避免透传启动窗口期异常响应
+              if (retry.status >= 200 && retry.status < 300) {
+                let out = retry.body;
+                try {
+                  const env2 = JSON.parse(out.toString('utf8'));
+                  if (env2.result && env2.result.ok) {
+                    env2.result.note = '检测到 MCP「' + collided + '」预留残留（预设重挂锁死），已自动重启智能体服务修复；本会话创建成功。';
+                    out = Buffer.from(JSON.stringify(env2));
+                  }
+                } catch (e) { /* 原样回传 */ }
+                res.writeHead(retry.status, retry.headers);
+                res.end(out);
+                return;
+              }
+              console.warn('[DSH Work Buddy] MCP 撞名自愈：重试未成功（status=' + retry.status + '），返回自解释错误。');
+            } else {
+              console.warn('[DSH Work Buddy] MCP 撞名自愈：智能体服务重启后未就绪，返回自解释错误。');
+            }
+          }
+        }
+
+        // 自解释错误（撞名且自愈未触发/未成功）
+        try {
+          const env = JSON.parse(body.toString('utf8'));
+          const err = env && env.result && (!env.result.ok) && env.result.error;
+          const msg = err && (err.message || '');
+          if (/already in use by another mcp-client/.test(msg)) {
+            env.result.error.message = 'MCP 正被其它会话占用（同一 MCP 同时只能服务一个会话）。'
+              + '当前有会话正在运行，为避免打断已暂缓自动修复；请稍后再试，或先结束运行中的对话。';
+            body = Buffer.from(JSON.stringify(env));
+          }
+        } catch (e) { /* 保持原样 */ }
+        res.writeHead(pres.statusCode, pres.headers);
+        res.end(body);
+      });
+    });
+    preq.on('error', () => {
+      reviveHarness();
+      if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: { code: 'harness-offline', message: 'dsh 智能体服务未就绪' } }));
+    });
+    preq.end(rawBody);
     return;
   }
 
