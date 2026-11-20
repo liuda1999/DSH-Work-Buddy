@@ -677,6 +677,97 @@ function shutdown(reason, code = 0) {
     });
 }
 
+// ---------- MCP 撞名自愈辅助（2026-11-21）：预设重挂锁死检测 + 无会话运行时自动重启 ----------
+// harness 行为：预设组合重挂时旧 serverName 预留不释放（进程内 WeakMap），锁死该预设的全部会话创建。
+// 网关层唯一可靠解法：无运行中会话时重启 harness（ histories 落盘不丢，运行中会话会被打断——故有运行会话时不做）。
+const MCP_HEAL_RESTART_COOLDOWN_MS = 60000;
+let mcpHealRestartAt = 0;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function harnessRunningCount() {
+  return await new Promise((resolve) => {
+    const payload = JSON.stringify({ type: 'client-request', rpcId: 'wb-heal-' + Date.now(), method: 'session.list', payload: {} });
+    const req = http.request({
+      host: HARNESS_HOST, port: HARNESS_PORT, path: '/api/session.list', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      timeout: 8000
+    }, (rres) => {
+      const cs = [];
+      rres.on('data', (c) => cs.push(c));
+      rres.on('end', () => {
+        try {
+          const env = JSON.parse(Buffer.concat(cs).toString('utf8'));
+          const items = env && env.result && env.result.ok && env.result.value && env.result.value.items;
+          resolve(Array.isArray(items) ? items.filter((s) => s && s.running).length : -1);
+        } catch (e) { resolve(-1); }
+      });
+    });
+    req.on('error', () => resolve(-1));
+    req.on('timeout', () => { try { req.destroy(new Error('timeout')); } catch (e) { /* ignore */ } });
+    req.end(payload);
+  });
+}
+// 严格就绪探测：RPC 信封调 host.describe 且要求 result.ok===true（probeHarness 会把启动期 404 当就绪，不能用）
+async function harnessRpcReady() {
+  return await new Promise((resolve) => {
+    const payload = JSON.stringify({ type: 'client-request', rpcId: 'wb-ready-' + Date.now(), method: 'host.describe', payload: {} });
+    const req = http.request({
+      host: HARNESS_HOST, port: HARNESS_PORT, path: '/api/host.describe', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      timeout: 8000
+    }, (rres) => {
+      const cs = [];
+      rres.on('data', (c) => cs.push(c));
+      rres.on('end', () => {
+        try {
+          const env = JSON.parse(Buffer.concat(cs).toString('utf8'));
+          resolve(Boolean(env && env.result && env.result.ok));
+        } catch (e) { resolve(false); }
+      });
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { try { req.destroy(new Error('timeout')); } catch (e) { /* ignore */ } });
+    req.end(payload);
+  });
+}
+
+// ---------- 上下文自动压缩桥（2026-11-21，最小范围补救）----------
+// 背景：harness 的 pre-step 自动压缩在 web 部署下静默失效（压力 200% 超窗不触发，检查记录 2026-11-21）；
+// 压力计量与投影（contextPressure）本身准确，手动 /compact 通路完好。
+// 最小桥接：周期巡检「空闲」会话的 contextPressure 投影，≥ 阈值时由网关代为执行一次 /compact。
+// 边界：仅 standard-fix 预设（唯一装配 compaction 的预设）；运行中会话不打扰；每会话 10 分钟冷却；
+//       DSH_WB_AUTO_COMPACT=0 可整体关闭。阈值 0.8 与 harness compaction-basic 默认保持一致。
+const WB_AUTO_COMPACT_INTERVAL_MS = 30000;
+const WB_AUTO_COMPACT_COOLDOWN_MS = 600000;
+const WB_AUTO_COMPACT_RATIO = 0.8;
+const wbAutoCompactAt = new Map();
+async function wbAutoCompactSweep() {
+  let items = [];
+  try {
+    const v = await harnessRpc('session.list', {});
+    items = (v && v.items) || [];
+  } catch (e) { return; /* harness 未就绪：静默等下一轮 */ }
+  for (const s of items) {
+    if (!s || s.running || s.agentPreset !== 'standard-fix') continue;
+    const cp = s.projections && s.projections.values && s.projections.values.contextPressure;
+    if (!cp || !(cp.contextWindow > 0) || !(cp.pressureTokens > 0)) continue;
+    if (cp.pressureTokens < cp.contextWindow * WB_AUTO_COMPACT_RATIO) continue;
+    const last = wbAutoCompactAt.get(s.sessionId) || 0;
+    if (Date.now() - last < WB_AUTO_COMPACT_COOLDOWN_MS) continue;
+    wbAutoCompactAt.set(s.sessionId, Date.now());
+    console.log(`[DSH Work Buddy] 自动压缩：会话 ${s.sessionId.slice(0, 26)} 压力 ${cp.pressureTokens}/${cp.contextWindow} ≥ 80%，代为执行 /compact…`);
+    try {
+      await harnessRpc('commands/execute', { args: { agentId: s.sessionId, line: '/compact' } });
+      console.log('[DSH Work Buddy] 自动压缩 /compact 已发起（结果见会话记录）');
+    } catch (e) {
+      console.warn('[DSH Work Buddy] 自动压缩 /compact 执行失败：', (e && e.message) || e);
+    }
+  }
+}
+if (process.env.DSH_WB_AUTO_COMPACT !== '0') {
+  const wbAutoCompactTimer = setInterval(() => { void wbAutoCompactSweep(); }, WB_AUTO_COMPACT_INTERVAL_MS);
+  wbAutoCompactTimer.unref();
+}
+
 // ---------- 代理转发（HTTP + WebSocket） ----------
 // 本地业务 mock 前缀（不转发）
 const LOCAL_API_PREFIXES = [
@@ -3684,59 +3775,6 @@ const server = http.createServer(async (req, res) => {
     });
     preq.end(rawJson);
     return;
-  }
-
-  // ---------- MCP 撞名自愈辅助（2026-11-21）：预设重挂锁死检测 + 无会话运行时自动重启 ----------
-  // harness 行为：预设组合重挂时旧 serverName 预留不释放（进程内 WeakMap），锁死该预设的全部会话创建。
-  // 网关层唯一可靠解法：无运行中会话时重启 harness（ histories 落盘不丢，运行中会话会被打断——故有运行会话时不做）。
-  const MCP_HEAL_RESTART_COOLDOWN_MS = 60000;
-  let mcpHealRestartAt = 0;
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  async function harnessRunningCount() {
-    return await new Promise((resolve) => {
-      const payload = JSON.stringify({ type: 'client-request', rpcId: 'wb-heal-' + Date.now(), method: 'session.list', payload: {} });
-      const req = http.request({
-        host: HARNESS_HOST, port: HARNESS_PORT, path: '/api/session.list', method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-        timeout: 8000
-      }, (rres) => {
-        const cs = [];
-        rres.on('data', (c) => cs.push(c));
-        rres.on('end', () => {
-          try {
-            const env = JSON.parse(Buffer.concat(cs).toString('utf8'));
-            const items = env && env.result && env.result.ok && env.result.value && env.result.value.items;
-            resolve(Array.isArray(items) ? items.filter((s) => s && s.running).length : -1);
-          } catch (e) { resolve(-1); }
-        });
-      });
-      req.on('error', () => resolve(-1));
-      req.on('timeout', () => { try { req.destroy(new Error('timeout')); } catch (e) { /* ignore */ } });
-      req.end(payload);
-    });
-  }
-  // 严格就绪探测：RPC 信封调 host.describe 且要求 result.ok===true（probeHarness 会把启动期 404 当就绪，不能用）
-  async function harnessRpcReady() {
-    return await new Promise((resolve) => {
-      const payload = JSON.stringify({ type: 'client-request', rpcId: 'wb-ready-' + Date.now(), method: 'host.describe', payload: {} });
-      const req = http.request({
-        host: HARNESS_HOST, port: HARNESS_PORT, path: '/api/host.describe', method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-        timeout: 8000
-      }, (rres) => {
-        const cs = [];
-        rres.on('data', (c) => cs.push(c));
-        rres.on('end', () => {
-          try {
-            const env = JSON.parse(Buffer.concat(cs).toString('utf8'));
-            resolve(Boolean(env && env.result && env.result.ok));
-          } catch (e) { resolve(false); }
-        });
-      });
-      req.on('error', () => resolve(false));
-      req.on('timeout', () => { try { req.destroy(new Error('timeout')); } catch (e) { /* ignore */ } });
-      req.end(payload);
-    });
   }
 
   // 会话创建撞名自解释（2026-11-20）：MCP serverName 进程级独占导致预设挂载失败时，
